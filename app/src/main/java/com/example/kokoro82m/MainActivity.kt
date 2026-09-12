@@ -154,7 +154,7 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Basic) }
-    var profiles by remember { mutableStateOf(ApiProfileStore.load(context)) }
+    var profiles: List<ApiProfile> by remember { mutableStateOf(ApiProfileStore.load(context)) }
     var selectedProfileId by remember {
         mutableStateOf(profiles.firstOrNull { it.enabled }?.id ?: profiles.first().id)
     }
@@ -225,9 +225,9 @@ fun MainScreen(
                 )
                 Screen.Settings -> SettingsScreen(
                     profiles = profiles,
-                    onProfilesChanged = {
-                        profiles = it
-                        ApiProfileStore.save(context, it)
+                    onProfilesChanged = { newProfiles ->
+                        profiles = newProfiles
+                        ApiProfileStore.save(context, newProfiles)
                     }
                 )
                 Screen.About -> AboutScreen()
@@ -758,8 +758,14 @@ fun AboutScreen() {
         Text("Kokoro-82M-Android-Plus", style = MaterialTheme.typography.titleLarge)
         Text("基于原项目二次开发", style = MaterialTheme.typography.bodyMedium)
         Spacer(modifier = Modifier.height(8.dp))
-        Text("原项目: https://github.com/puff-dayo/Kokoro-82M-Android", style = MaterialTheme.typography.bodySmall)
-        Text("本仓库: https://github.com/ZW-SYS/Kokoro-82M-Android-Plus", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "原项目: https://github.com/puff-dayo/Kokoro-82M-Android",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            "本仓库: https://github.com/ZW-SYS/Kokoro-82M-Android-Plus",
+            style = MaterialTheme.typography.bodySmall
+        )
         Text("开发者: ZW-SYS", style = MaterialTheme.typography.bodySmall)
         Text("协议: GPL-3.0", style = MaterialTheme.typography.bodySmall)
         Spacer(modifier = Modifier.height(16.dp))
