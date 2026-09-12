@@ -118,21 +118,7 @@ class ApiService {
                 val body = bodyStr.toRequestBody("application/json; charset=utf-8".toMediaType())
 
                 val builder = Request.Builder().url(url)
-                when (profile.providerType) {
-                    "Gemini" -> {}
-                    "Claude" -> {
-                        builder.addHeader("x-api-key", profile.apiKey)
-                        builder.addHeader("anthropic-version", "2023-06-01")
-                        builder.addHeader("Content-Type", "application/json")
-                    }
-                    "Ollama" -> {
-                        builder.addHeader("Content-Type", "application/json")
-                    }
-                    else -> {
-                        builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
-                        builder.addHeader("Content-Type", "application/json")
-                    }
-                }
+                applyHeaders(builder, profile)
 
                 val request = builder.post(body).build()
                 val response = client.newCall(request).execute()
@@ -148,6 +134,152 @@ class ApiService {
                 withContext(Dispatchers.Main) { onError(e.message ?: "网络请求失败") }
             }
         }
+    }
+
+    suspend fun testConnection(
+        profile: ApiProfile,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                val url = buildUrl(profile)
+                val bodyStr = buildBody("Hi", profile)
+                val body = bodyStr.toRequestBody("application/json; charset=utf-8".toMediaType())
+
+                val builder = Request.Builder().url(url)
+                applyHeaders(builder, profile)
+
+                val request = builder.post(body).build()
+                val response = client.newCall(request).execute()
+                val responseBody = response.body?.string() ?: ""
+
+                if (response.isSuccessful) {
+                    val reply = extractReply(responseBody, profile)
+                    if (reply.startsWith("无法解析")) {
+                        withContext(Dispatchers.Main) { onResult(false, "响应格式异常") }
+                    } else {
+                        withContext(Dispatchers.Main) { onResult(true, "连接成功") }
+                    }
+                } else {
+                    withContext(Dispatchers.Main) { onResult(false, "HTTP ${response.code}") }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onResult(false, e.message ?: "网络错误") }
+            }
+        }
+    }
+
+    suspend fun fetchModels(
+        profile: ApiProfile,
+        onSuccess: (List<String>) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                val modelsUrl = buildModelsUrl(profile)
+                if (modelsUrl == null) {
+                    withContext(Dispatchers.Main) { onError("该类型不支持自动获取模型") }
+                    return@withContext
+                }
+
+                val builder = Request.Builder().url(modelsUrl)
+                when (profile.providerType) {
+                    "Ollama" -> {}
+                    else -> builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
+                }
+
+                val request = builder.get().build()
+                val response = client.newCall(request).execute()
+                val responseBody = response.body?.string() ?: ""
+
+                if (!response.isSuccessful) {
+                    withContext(Dispatchers.Main) { onError("HTTP ${response.code}") }
+                    return@withContext
+                }
+
+                val models = extractModels(responseBody, profile)
+                if (models.isEmpty()) {
+                    withContext(Dispatchers.Main) { onError("未获取到模型") }
+                } else {
+                    withContext(Dispatchers.Main) { onSuccess(models) }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onError(e.message ?: "网络错误") }
+            }
+        }
+    }
+
+    private fun applyHeaders(builder: Request.Builder, profile: ApiProfile) {
+        when (profile.providerType) {
+            "Gemini" -> {}
+            "Claude" -> {
+                builder.addHeader("x-api-key", profile.apiKey)
+                builder.addHeader("anthropic-version", "2023-06-01")
+                builder.addHeader("Content-Type", "application/json")
+            }
+            "Ollama" -> {
+                builder.addHeader("Content-Type", "application/json")
+            }
+            else -> {
+                builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
+                builder.addHeader("Content-Type", "application/json")
+            }
+        }
+    }
+
+    private fun buildModelsUrl(profile: ApiProfile): String? {
+        return when (profile.providerType) {
+            "OpenAI" -> {
+                val base = profile.baseUrl
+                    .removeSuffix("/chat/completions")
+                    .removeSuffix("/completions")
+                    .trimEnd('/')
+                if (base.isEmpty()) null else "$base/models"
+            }
+            "Ollama" -> {
+                val base = profile.baseUrl
+                    .removeSuffix("/api/generate")
+                    .trimEnd('/')
+                if (base.isEmpty()) null else "$base/api/tags"
+            }
+            "Gemini" -> {
+                val base = profile.baseUrl.trimEnd('/')
+                if (base.isEmpty()) null else "$base?key=${profile.apiKey}"
+            }
+            else -> null
+        }
+    }
+
+    private fun extractModels(json: String, profile: ApiProfile): List<String> {
+        val result = mutableListOf<String>()
+        try {
+            val obj = JSONObject(json)
+            when (profile.providerType) {
+                "OpenAI" -> {
+                    val data = obj.optJSONArray("data") ?: return result
+                    for (i in 0 until data.length()) {
+                        val id = data.optJSONObject(i)?.optString("id", "") ?: ""
+                        if (id.isNotEmpty()) result.add(id)
+                    }
+                }
+                "Ollama" -> {
+                    val models = obj.optJSONArray("models") ?: return result
+                    for (i in 0 until models.length()) {
+                        val name = models.optJSONObject(i)?.optString("name", "") ?: ""
+                        if (name.isNotEmpty()) result.add(name)
+                    }
+                }
+                "Gemini" -> {
+                    val models = obj.optJSONArray("models") ?: return result
+                    for (i in 0 until models.length()) {
+                        val name = models.optJSONObject(i)?.optString("name", "") ?: ""
+                        val clean = name.removePrefix("models/")
+                        if (clean.isNotEmpty()) result.add(clean)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return result
     }
 
     private fun buildUrl(profile: ApiProfile): String {

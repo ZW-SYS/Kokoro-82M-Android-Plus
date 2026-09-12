@@ -73,6 +73,8 @@ import com.example.kokoro82m.utils.AiProviders
 import com.example.kokoro82m.utils.ApiProfile
 import com.example.kokoro82m.utils.ApiProfileStore
 import com.example.kokoro82m.utils.ApiService
+import com.example.kokoro82m.utils.ChatHistoryRepository
+import com.example.kokoro82m.utils.ChatMessage
 import com.example.kokoro82m.utils.HistoryRepository
 import com.google.android.material.color.DynamicColors
 import kotlinx.coroutines.launch
@@ -90,6 +92,7 @@ class MyApplication : Application() {
 class MainActivity : ComponentActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var historyRepo: HistoryRepository
+    private lateinit var chatRepo: ChatHistoryRepository
     private val apiService = ApiService()
     private var tts: TextToSpeech? = null
 
@@ -98,6 +101,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         prefs = getSharedPreferences("kokoro_settings", Context.MODE_PRIVATE)
         historyRepo = HistoryRepository(this)
+        chatRepo = ChatHistoryRepository(this)
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -115,6 +119,7 @@ class MainActivity : ComponentActivity() {
                 }
                 MainScreen(
                     historyRepo = historyRepo,
+                    chatRepo = chatRepo,
                     apiService = apiService,
                     onSpeak = { text, speed ->
                         tts?.setSpeechRate(speed)
@@ -148,6 +153,7 @@ sealed class Screen(val title: String) {
 @Composable
 fun MainScreen(
     historyRepo: HistoryRepository,
+    chatRepo: ChatHistoryRepository,
     apiService: ApiService,
     onSpeak: (String, Float) -> Unit,
     onSaveHistory: (String, String, Float) -> Unit
@@ -213,6 +219,7 @@ fun MainScreen(
                 )
                 Screen.Chat -> ChatScreen(
                     apiService = apiService,
+                    chatRepo = chatRepo,
                     profiles = profiles,
                     selectedProfileId = selectedProfileId,
                     onProfileSelected = { selectedProfileId = it },
@@ -224,6 +231,7 @@ fun MainScreen(
                     onPlay = { text -> onSpeak(text, 1.0f) }
                 )
                 Screen.Settings -> SettingsScreen(
+                    apiService = apiService,
                     profiles = profiles,
                     onProfilesChanged = { newProfiles ->
                         profiles = newProfiles
@@ -357,15 +365,17 @@ fun BasicScreen(
 @Composable
 fun ChatScreen(
     apiService: ApiService,
+    chatRepo: ChatHistoryRepository,
     profiles: List<ApiProfile>,
     selectedProfileId: String,
     onProfileSelected: (String) -> Unit,
     onSpeak: (String, Float) -> Unit,
     onSaveHistory: (String, String, Float) -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
-    var messages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
     var isSending by remember { mutableStateOf(false) }
     var profileExpanded by remember { mutableStateOf(false) }
 
@@ -374,49 +384,66 @@ fun ChatScreen(
         ?: enabledProfiles.firstOrNull()
         ?: profiles.first()
 
+    LaunchedEffect(currentProfile.id) {
+        messages = chatRepo.load(currentProfile.id)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        ExposedDropdownMenuBox(
-            expanded = profileExpanded,
-            onExpandedChange = { profileExpanded = !profileExpanded },
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            TextField(
-                value = currentProfile.name,
-                onValueChange = {},
-                label = { Text("当前 API 配置") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .menuAnchor(),
-                readOnly = true,
-                trailingIcon = {
-                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileExpanded)
-                },
-                shape = RoundedCornerShape(14.dp)
-            )
-            ExposedDropdownMenu(
+            ExposedDropdownMenuBox(
                 expanded = profileExpanded,
-                onDismissRequest = { profileExpanded = false }
+                onExpandedChange = { profileExpanded = !profileExpanded },
+                modifier = Modifier.weight(1f)
             ) {
-                if (enabledProfiles.isEmpty()) {
-                    DropdownMenuItem(
-                        text = { Text("暂无可用配置") },
-                        onClick = { profileExpanded = false }
-                    )
-                } else {
-                    enabledProfiles.forEach { p ->
+                TextField(
+                    value = currentProfile.name,
+                    onValueChange = {},
+                    label = { Text("当前 API 配置") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(),
+                    readOnly = true,
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileExpanded)
+                    },
+                    shape = RoundedCornerShape(14.dp)
+                )
+                ExposedDropdownMenu(
+                    expanded = profileExpanded,
+                    onDismissRequest = { profileExpanded = false }
+                ) {
+                    if (enabledProfiles.isEmpty()) {
                         DropdownMenuItem(
-                            text = { Text(p.name) },
-                            onClick = {
-                                onProfileSelected(p.id)
-                                profileExpanded = false
-                            }
+                            text = { Text("暂无可用配置") },
+                            onClick = { profileExpanded = false }
                         )
+                    } else {
+                        enabledProfiles.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    onProfileSelected(p.id)
+                                    profileExpanded = false
+                                }
+                            )
+                        }
                     }
                 }
+            }
+            IconButton(onClick = {
+                chatRepo.clear(currentProfile.id)
+                messages = emptyList()
+                Toast.makeText(context, "已清空当前对话", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Default.Delete, contentDescription = "清空对话")
             }
         }
 
@@ -428,12 +455,12 @@ fun ChatScreen(
                 .weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(messages) { (role, content) ->
+            items(messages) { msg ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (role == "user")
+                        containerColor = if (msg.role == "user")
                             MaterialTheme.colorScheme.primaryContainer
                         else
                             MaterialTheme.colorScheme.surfaceVariant
@@ -441,17 +468,17 @@ fun ChatScreen(
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(
-                            text = content,
+                            text = msg.content,
                             style = MaterialTheme.typography.bodyMedium
                         )
-                        if (role == "ai") {
+                        if (msg.role == "ai") {
                             Spacer(modifier = Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = { onSpeak(content, 1.0f) }) {
+                                TextButton(onClick = { onSpeak(msg.content, 1.0f) }) {
                                     Text("朗读")
                                 }
                                 TextButton(onClick = {
-                                    onSaveHistory(content, "AI回复", 1.0f)
+                                    onSaveHistory(msg.content, "AI回复", 1.0f)
                                 }) {
                                     Text("保存")
                                 }
@@ -480,7 +507,9 @@ fun ChatScreen(
                 onClick = {
                     if (input.isEmpty() || isSending) return@Button
                     val userMsg = input
-                    messages = messages + ("user" to userMsg)
+                    val updated = messages + ChatMessage("user", userMsg)
+                    messages = updated
+                    chatRepo.save(currentProfile.id, updated)
                     input = ""
                     isSending = true
                     scope.launch {
@@ -488,11 +517,15 @@ fun ChatScreen(
                             prompt = userMsg,
                             profile = currentProfile,
                             onSuccess = { reply ->
-                                messages = messages + ("ai" to reply)
+                                val withReply = messages + ChatMessage("ai", reply)
+                                messages = withReply
+                                chatRepo.save(currentProfile.id, withReply)
                                 isSending = false
                             },
                             onError = { error ->
-                                messages = messages + ("ai" to "错误: $error")
+                                val withError = messages + ChatMessage("ai", "错误: $error")
+                                messages = withError
+                                chatRepo.save(currentProfile.id, withError)
                                 isSending = false
                             }
                         )
@@ -511,6 +544,7 @@ fun ChatScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    apiService: ApiService,
     profiles: List<ApiProfile>,
     onProfilesChanged: (List<ApiProfile>) -> Unit
 ) {
@@ -587,6 +621,8 @@ fun SettingsScreen(
     }
 
     if (showDialog) {
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current
         var name by remember { mutableStateOf(editingProfile?.name ?: "") }
         var providerType by remember { mutableStateOf(editingProfile?.providerType ?: "OpenAI") }
         var baseUrl by remember { mutableStateOf(editingProfile?.baseUrl ?: "") }
@@ -595,6 +631,28 @@ fun SettingsScreen(
         var enabled by remember { mutableStateOf(editingProfile?.enabled ?: true) }
         var presetExpanded by remember { mutableStateOf(false) }
         var typeExpanded by remember { mutableStateOf(false) }
+        var testing by remember { mutableStateOf(false) }
+        var fetching by remember { mutableStateOf(false) }
+        var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
+        var showModels by remember { mutableStateOf(false) }
+
+        fun currentProfile(): ApiProfile {
+            return editingProfile?.copy(
+                name = name,
+                providerType = providerType,
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                model = model,
+                enabled = enabled
+            ) ?: ApiProfile(
+                name = name,
+                providerType = providerType,
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                model = model,
+                enabled = enabled
+            )
+        }
 
         AlertDialog(
             onDismissRequest = { showDialog = false },
@@ -692,17 +750,73 @@ fun SettingsScreen(
                         label = { Text("API Key") },
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = model,
-                        onValueChange = { model = it },
-                        label = { Text("模型名称") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = model,
+                            onValueChange = { model = it },
+                            label = { Text("模型") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = {
+                                fetching = true
+                                scope.launch {
+                                    apiService.fetchModels(
+                                        profile = currentProfile(),
+                                        onSuccess = { list ->
+                                            fetchedModels = list
+                                            showModels = true
+                                            fetching = false
+                                        },
+                                        onError = { err ->
+                                            Toast.makeText(context, "获取失败: $err", Toast.LENGTH_LONG).show()
+                                            fetching = false
+                                        }
+                                    )
+                                }
+                            },
+                            enabled = !fetching
+                        ) {
+                            Text(if (fetching) "..." else "获取")
+                        }
+                    }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("启用")
                         Spacer(modifier = Modifier.width(8.dp))
                         Switch(checked = enabled, onCheckedChange = { enabled = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextButton(
+                            onClick = {
+                                testing = true
+                                scope.launch {
+                                    apiService.testConnection(
+                                        profile = currentProfile(),
+                                        onResult = { ok, msg ->
+                                            Toast.makeText(
+                                                context,
+                                                if (ok) "连接成功" else "连接失败: $msg",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            testing = false
+                                        }
+                                    )
+                                }
+                            },
+                            enabled = !testing
+                        ) {
+                            Text(if (testing) "测试中..." else "测试连接")
+                        }
                     }
                 }
             },
@@ -744,6 +858,36 @@ fun SettingsScreen(
                 }
             }
         )
+
+        if (showModels) {
+            AlertDialog(
+                onDismissRequest = { showModels = false },
+                title = { Text("选择模型") },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(fetchedModels) { m ->
+                            TextButton(
+                                onClick = {
+                                    model = m
+                                    showModels = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(m)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showModels = false }) {
+                        Text("关闭")
+                    }
+                }
+            )
+        }
     }
 }
 
