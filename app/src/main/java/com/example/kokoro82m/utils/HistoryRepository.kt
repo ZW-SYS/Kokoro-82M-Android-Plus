@@ -1,101 +1,56 @@
 package com.example.kokoro82m.utils
 
 import android.content.Context
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
 data class HistoryItem(
-    val id: String = System.currentTimeMillis().toString(),
     val text: String,
     val style: String,
     val speed: Float,
-    val time: String,
-    val filePath: String
+    val time: String
 )
 
-class HistoryRepository(context: Context) {
+class HistoryRepository(private val context: Context) {
     private val file = File(context.filesDir, "history.json")
-    private val _history = MutableStateFlow<List<HistoryItem>>(emptyList())
-    val historyFlow: StateFlow<List<HistoryItem>> = _history.asStateFlow()
 
-    init {
-        loadHistory()
-    }
-
-    private fun loadHistory() {
-        if (!file.exists()) {
-            _history.value = emptyList()
-            return
-        }
+    fun getAll(): List<HistoryItem> {
+        if (!file.exists()) return emptyList()
+        val list = mutableListOf<HistoryItem>()
         try {
-            val json = file.readText()
-            val array = JSONArray(json)
-            val list = mutableListOf<HistoryItem>()
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
+            val arr = JSONArray(file.readText())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
                 list.add(
                     HistoryItem(
-                        id = obj.getString("id"),
-                        text = obj.getString("text"),
-                        style = obj.getString("style"),
-                        speed = obj.getDouble("speed").toFloat(),
-                        time = obj.getString("time"),
-                        filePath = obj.getString("filePath")
+                        text = obj.optString("text", ""),
+                        style = obj.optString("style", ""),
+                        speed = obj.optDouble("speed", 1.0).toFloat(),
+                        time = obj.optString("time", "")
                     )
                 )
             }
-            _history.value = list
-        } catch (e: Exception) {
-            _history.value = emptyList()
+        } catch (_: Exception) {}
+        return list.reversed()
+    }
+
+    fun addHistory(text: String, style: String, speed: Float, time: String) {
+        val list = getAll().toMutableList()
+        list.add(HistoryItem(text, style, speed, time))
+        val arr = JSONArray()
+        for (item in list) {
+            val obj = JSONObject()
+            obj.put("text", item.text)
+            obj.put("style", item.style)
+            obj.put("speed", item.speed.toDouble())
+            obj.put("time", item.time)
+            arr.put(obj)
         }
+        file.writeText(arr.toString())
     }
 
-    private fun saveHistory() {
-        try {
-            val array = JSONArray()
-            _history.value.forEach {
-                val obj = JSONObject().apply {
-                    put("id", it.id)
-                    put("text", it.text)
-                    put("style", it.style)
-                    put("speed", it.speed)
-                    put("time", it.time)
-                    put("filePath", it.filePath)
-                }
-                array.put(obj)
-            }
-            file.writeText(array.toString())
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+    fun clear() {
+        file.delete()
     }
-
-    fun addHistory(text: String, style: String, speed: Float, time: String, filePath: String) {
-        val item = HistoryItem(
-            text = text,
-            style = style,
-            speed = speed,
-            time = time,
-            filePath = filePath
-        )
-        val newList = listOf(item) + _history.value
-        _history.value = newList
-        saveHistory()
-    }
-
-    fun deleteHistory(id: String) {
-        _history.value = _history.value.filter { it.id != id }
-        saveHistory()
-    }
-
-    fun clearAll() {
-        _history.value = emptyList()
-        saveHistory()
-    }
-
-    fun getAllHistory(): List<HistoryItem> = _history.value
 }

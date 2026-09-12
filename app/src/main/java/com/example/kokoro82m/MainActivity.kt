@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,13 +19,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -35,13 +42,16 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -50,18 +60,22 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
-import com.example.kokoro82m.screens.Acknowledgements
 import com.example.kokoro82m.screens.HistoryScreen
 import com.example.kokoro82m.utils.AiProviders
+import com.example.kokoro82m.utils.ApiProfile
+import com.example.kokoro82m.utils.ApiProfileStore
 import com.example.kokoro82m.utils.ApiService
 import com.example.kokoro82m.utils.HistoryRepository
 import com.google.android.material.color.DynamicColors
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,206 +90,44 @@ class MyApplication : Application() {
 class MainActivity : ComponentActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var historyRepo: HistoryRepository
-    private lateinit var apiService: ApiService
+    private val apiService = ApiService()
     private var tts: TextToSpeech? = null
-
-    companion object {
-        const val TAG = "Kokoro"
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
         prefs = getSharedPreferences("kokoro_settings", Context.MODE_PRIVATE)
         historyRepo = HistoryRepository(this)
-        apiService = ApiService()
 
-        apiService.apiKey = prefs.getString("api_key", "") ?: ""
-        apiService.selectedProvider = prefs.getString("selected_provider", "DeepSeek") ?: "DeepSeek"
-        apiService.selectedModel = prefs.getString("selected_model", "deepseek-chat") ?: "deepseek-chat"
-        apiService.customBaseUrl = prefs.getString("custom_base_url", "") ?: ""
-        apiService.customModel = prefs.getString("custom_model", "") ?: ""
-
-        initTTS()
-
-        setContent {
-            KokoroTheme {
-                LaunchedEffect(Unit) {
-                    WindowCompat.setDecorFitsSystemWindows(window, false)
-                }
-
-                val savedStyle = prefs.getString("last_style", "af_sarah") ?: "af_sarah"
-                val savedSpeed = prefs.getFloat("last_speed", 1.0f)
-                val isDarkMode = prefs.getBoolean("dark_mode", false)
-                val savedEngine = prefs.getInt("tts_engine", 0)
-
-                MainScreen(
-                    initialStyle = savedStyle,
-                    initialSpeed = savedSpeed,
-                    initialDarkMode = isDarkMode,
-                    initialEngine = savedEngine,
-                    initialProvider = apiService.selectedProvider,
-                    initialModel = apiService.selectedModel,
-                    initialApiKey = apiService.apiKey,
-                    historyRepo = historyRepo,
-                    onGenerateAudio = { text, style, speed, shouldSave, engine, onComplete ->
-                        generateAudio(text, style, speed, shouldSave, engine, onComplete)
-                    },
-                    onPlayHistory = { text ->
-                        speakText(text, 1.0f)
-                    },
-                    onSettingsChanged = { style, speed ->
-                        prefs.edit().apply {
-                            putString("last_style", style)
-                            putFloat("last_speed", speed)
-                            apply()
-                        }
-                    },
-                    onDarkModeChanged = { isDark ->
-                        prefs.edit().putBoolean("dark_mode", isDark).apply()
-                    },
-                    onProviderChanged = { provider ->
-                        apiService.selectedProvider = provider
-                        prefs.edit().putString("selected_provider", provider).apply()
-                    },
-                    onModelChanged = { model ->
-                        apiService.selectedModel = model
-                        prefs.edit().putString("selected_model", model).apply()
-                    },
-                    onApiKeyChanged = { key ->
-                        apiService.apiKey = key
-                        prefs.edit().putString("api_key", key).apply()
-                    },
-                    onCustomUrlChanged = { url ->
-                        apiService.customBaseUrl = url
-                        prefs.edit().putString("custom_base_url", url).apply()
-                    },
-                    onCustomModelChanged = { model ->
-                        apiService.customModel = model
-                        prefs.edit().putString("custom_model", model).apply()
-                    }
-                )
-            }
-        }
-    }
-
-    private fun initTTS() {
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 val result = tts?.setLanguage(Locale.CHINESE)
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     tts?.setLanguage(Locale.US)
                 }
-                Log.d(TAG, "TTS init success")
-            } else {
-                Log.e(TAG, "TTS init failed")
             }
         }
-    }
 
-    private fun speakText(text: String, speed: Float) {
-        val ttsInstance = tts
-        if (ttsInstance == null) {
-            Toast.makeText(this, "TTS 未初始化", Toast.LENGTH_SHORT).show()
-            return
-        }
-        ttsInstance.setSpeechRate(speed)
-        ttsInstance.setPitch(1.0f)
-        ttsInstance.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-    }
-
-    private fun generateAudio(
-        text: String,
-        style: String,
-        speed: Float,
-        shouldSave: Boolean,
-        engine: Int,
-        onComplete: () -> Unit
-    ) {
-        when (engine) {
-            0 -> speakWithSystemTTS(text, speed, shouldSave, onComplete)
-            1 -> speakWithCloudAI(text, speed, shouldSave, onComplete)
-            else -> speakWithSystemTTS(text, speed, shouldSave, onComplete)
-        }
-    }
-
-    private fun speakWithSystemTTS(
-        text: String,
-        speed: Float,
-        shouldSave: Boolean,
-        onComplete: () -> Unit
-    ) {
-        val ttsInstance = tts
-        if (ttsInstance == null) {
-            Toast.makeText(this, "TTS 未初始化", Toast.LENGTH_SHORT).show()
-            onComplete()
-            return
-        }
-
-        ttsInstance.setSpeechRate(speed)
-        ttsInstance.setPitch(1.0f)
-
-        val result = ttsInstance.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-
-        if (result == TextToSpeech.SUCCESS) {
-            if (shouldSave) {
-                val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date())
-                historyRepo.addHistory(
-                    text = text,
-                    style = "系统TTS",
-                    speed = speed,
-                    time = timeStr,
-                    filePath = ""
-                )
-                Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            Toast.makeText(this, "朗读失败", Toast.LENGTH_SHORT).show()
-        }
-        onComplete()
-    }
-
-    private fun speakWithCloudAI(
-        text: String,
-        speed: Float,
-        shouldSave: Boolean,
-        onComplete: () -> Unit
-    ) {
-        Toast.makeText(this, "AI 思考中", Toast.LENGTH_SHORT).show()
-
-        apiService.chat(
-            prompt = text,
-            onSuccess = { reply ->
-                runOnUiThread {
-                    val ttsInstance = tts
-                    if (ttsInstance != null) {
-                        ttsInstance.setSpeechRate(speed)
-                        ttsInstance.setPitch(1.0f)
-                        ttsInstance.speak(reply, TextToSpeech.QUEUE_FLUSH, null, null)
-                    }
-
-                    if (shouldSave) {
+        setContent {
+            KokoroTheme {
+                LaunchedEffect(Unit) {
+                    WindowCompat.setDecorFitsSystemWindows(window, false)
+                }
+                MainScreen(
+                    historyRepo = historyRepo,
+                    apiService = apiService,
+                    onSpeak = { text, speed ->
+                        tts?.setSpeechRate(speed)
+                        tts?.setPitch(1.0f)
+                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+                    },
+                    onSaveHistory = { text, style, speed ->
                         val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date())
-                        historyRepo.addHistory(
-                            text = "用户: $text\nAI: $reply",
-                            style = "AI (${apiService.selectedProvider})",
-                            speed = speed,
-                            time = timeStr,
-                            filePath = ""
-                        )
-                        Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
+                        historyRepo.addHistory(text, style, speed, timeStr)
                     }
-                    onComplete()
-                }
-            },
-            onError = { error ->
-                runOnUiThread {
-                    Toast.makeText(this, "错误: $error", Toast.LENGTH_LONG).show()
-                    onComplete()
-                }
+                )
             }
-        )
+        }
     }
 
     override fun onDestroy() {
@@ -286,6 +138,7 @@ class MainActivity : ComponentActivity() {
 
 sealed class Screen(val title: String) {
     object Basic : Screen("语音合成")
+    object Chat : Screen("AI 对话")
     object History : Screen("历史记录")
     object Settings : Screen("设置")
     object About : Screen("关于")
@@ -294,26 +147,17 @@ sealed class Screen(val title: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    initialStyle: String,
-    initialSpeed: Float,
-    initialDarkMode: Boolean,
-    initialEngine: Int,
-    initialProvider: String,
-    initialModel: String,
-    initialApiKey: String,
     historyRepo: HistoryRepository,
-    onGenerateAudio: (String, String, Float, Boolean, Int, () -> Unit) -> Unit,
-    onPlayHistory: (String) -> Unit,
-    onSettingsChanged: (String, Float) -> Unit,
-    onDarkModeChanged: (Boolean) -> Unit,
-    onProviderChanged: (String) -> Unit,
-    onModelChanged: (String) -> Unit,
-    onApiKeyChanged: (String) -> Unit,
-    onCustomUrlChanged: (String) -> Unit,
-    onCustomModelChanged: (String) -> Unit
+    apiService: ApiService,
+    onSpeak: (String, Float) -> Unit,
+    onSaveHistory: (String, String, Float) -> Unit
 ) {
+    val context = LocalContext.current
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Basic) }
-    var isDarkMode by remember { mutableStateOf(initialDarkMode) }
+    var profiles by remember { mutableStateOf(ApiProfileStore.load(context)) }
+    var selectedProfileId by remember {
+        mutableStateOf(profiles.firstOrNull { it.enabled }?.id ?: profiles.first().id)
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -333,6 +177,12 @@ fun MainScreen(
                     label = { Text("合成") },
                     selected = currentScreen == Screen.Basic,
                     onClick = { currentScreen = Screen.Basic }
+                )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Default.Send, contentDescription = null) },
+                    label = { Text("聊天") },
+                    selected = currentScreen == Screen.Chat,
+                    onClick = { currentScreen = Screen.Chat }
                 )
                 NavigationBarItem(
                     icon = { Icon(Icons.Default.List, contentDescription = null) },
@@ -358,30 +208,27 @@ fun MainScreen(
         Box(modifier = Modifier.padding(innerPadding)) {
             when (currentScreen) {
                 Screen.Basic -> BasicScreen(
-                    initialStyle = initialStyle,
-                    initialSpeed = initialSpeed,
-                    initialEngine = initialEngine,
-                    onGenerateAudio = onGenerateAudio,
-                    onSettingsChanged = onSettingsChanged
+                    onSpeak = onSpeak,
+                    onSaveHistory = onSaveHistory
+                )
+                Screen.Chat -> ChatScreen(
+                    apiService = apiService,
+                    profiles = profiles,
+                    selectedProfileId = selectedProfileId,
+                    onProfileSelected = { selectedProfileId = it },
+                    onSpeak = onSpeak,
+                    onSaveHistory = onSaveHistory
                 )
                 Screen.History -> HistoryScreen(
                     historyRepo = historyRepo,
-                    onPlay = onPlayHistory
+                    onPlay = { text -> onSpeak(text, 1.0f) }
                 )
                 Screen.Settings -> SettingsScreen(
-                    isDarkMode = isDarkMode,
-                    initialProvider = initialProvider,
-                    initialModel = initialModel,
-                    initialApiKey = initialApiKey,
-                    onDarkModeChanged = { newMode ->
-                        isDarkMode = newMode
-                        onDarkModeChanged(newMode)
-                    },
-                    onProviderChanged = onProviderChanged,
-                    onModelChanged = onModelChanged,
-                    onApiKeyChanged = onApiKeyChanged,
-                    onCustomUrlChanged = onCustomUrlChanged,
-                    onCustomModelChanged = onCustomModelChanged
+                    profiles = profiles,
+                    onProfilesChanged = {
+                        profiles = it
+                        ApiProfileStore.save(context, it)
+                    }
                 )
                 Screen.About -> AboutScreen()
             }
@@ -392,31 +239,13 @@ fun MainScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BasicScreen(
-    initialStyle: String,
-    initialSpeed: Float,
-    initialEngine: Int,
-    onGenerateAudio: (String, String, Float, Boolean, Int, () -> Unit) -> Unit,
-    onSettingsChanged: (String, Float) -> Unit
+    onSpeak: (String, Float) -> Unit,
+    onSaveHistory: (String, String, Float) -> Unit
 ) {
     val context = LocalContext.current
-
     var text by remember { mutableStateOf("") }
-    var style by remember { mutableStateOf(initialStyle) }
-    var speed by remember { mutableStateOf(initialSpeed) }
+    var speed by remember { mutableStateOf(1.0f) }
     var isProcessing by remember { mutableStateOf(false) }
-    var selectedEngine by remember { mutableStateOf(initialEngine) }
-    var engineExpanded by remember { mutableStateOf(false) }
-    var styleExpanded by remember { mutableStateOf(false) }
-
-    val engineNames = listOf("系统TTS", "AI 对话")
-    val names = listOf(
-        "af", "af_bella", "af_nicole", "af_sarah", "af_sky",
-        "am_adam", "am_michael", "bf_emma", "bf_isabella", "bm_george", "bm_lewis"
-    )
-
-    LaunchedEffect(style, speed) {
-        onSettingsChanged(style, speed)
-    }
 
     Column(
         modifier = Modifier
@@ -447,99 +276,24 @@ fun BasicScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                ExposedDropdownMenuBox(
-                    expanded = engineExpanded,
-                    onExpandedChange = { engineExpanded = !engineExpanded },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    TextField(
-                        value = engineNames[selectedEngine],
-                        onValueChange = {},
-                        label = { Text("模式") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(),
-                        readOnly = true,
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = engineExpanded)
-                        },
-                        shape = RoundedCornerShape(14.dp)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     )
-
-                    ExposedDropdownMenu(
-                        expanded = engineExpanded,
-                        onDismissRequest = { engineExpanded = false }
-                    ) {
-                        engineNames.forEachIndexed { index, name ->
-                            DropdownMenuItem(
-                                text = { Text(name) },
-                                onClick = {
-                                    selectedEngine = index
-                                    engineExpanded = false
-                                }
-                            )
-                        }
-                    }
+                ) {
+                    Text(
+                        text = "系统 TTS 模式，支持中文。需要 AI 对话请切换到聊天页。",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
 
-                if (selectedEngine == 0) {
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    ExposedDropdownMenuBox(
-                        expanded = styleExpanded,
-                        onExpandedChange = { styleExpanded = !styleExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextField(
-                            value = style,
-                            onValueChange = {},
-                            label = { Text("音色") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
-                            readOnly = true,
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleExpanded)
-                            },
-                            shape = RoundedCornerShape(14.dp)
-                        )
-
-                        ExposedDropdownMenu(
-                            expanded = styleExpanded,
-                            onDismissRequest = { styleExpanded = false }
-                        ) {
-                            names.forEach { name ->
-                                DropdownMenuItem(
-                                    text = { Text(name) },
-                                    onClick = {
-                                        style = name
-                                        styleExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        )
-                    ) {
-                        Text(
-                            text = "输入内容将发送给 AI，回复会朗读并保存",
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
-                    text = "语速 $speed",
+                    text = "语速 ${String.format("%.1f", speed)}",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Slider(
@@ -563,18 +317,16 @@ fun BasicScreen(
                         return@Button
                     }
                     isProcessing = true
-                    onGenerateAudio(text, style, speed, false, selectedEngine) {
-                        isProcessing = false
-                    }
+                    onSpeak(text, speed)
+                    isProcessing = false
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
                     .weight(1f)
                     .height(50.dp),
-                enabled = !isProcessing,
+                enabled = !isProcessing && text.isNotEmpty(),
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Text(if (isProcessing) "处理中" else "播放")
+                Text("播放")
             }
 
             Button(
@@ -584,18 +336,173 @@ fun BasicScreen(
                         return@Button
                     }
                     isProcessing = true
-                    onGenerateAudio(text, style, speed, true, selectedEngine) {
-                        isProcessing = false
-                    }
+                    onSpeak(text, speed)
+                    onSaveHistory(text, "系统TTS", speed)
+                    isProcessing = false
+                    Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
                     .weight(1f)
                     .height(50.dp),
-                enabled = !isProcessing,
+                enabled = !isProcessing && text.isNotEmpty(),
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Text(if (isProcessing) "处理中" else "保存")
+                Text("保存")
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatScreen(
+    apiService: ApiService,
+    profiles: List<ApiProfile>,
+    selectedProfileId: String,
+    onProfileSelected: (String) -> Unit,
+    onSpeak: (String, Float) -> Unit,
+    onSaveHistory: (String, String, Float) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var input by remember { mutableStateOf("") }
+    var messages by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var isSending by remember { mutableStateOf(false) }
+    var profileExpanded by remember { mutableStateOf(false) }
+
+    val enabledProfiles = profiles.filter { it.enabled }
+    val currentProfile = enabledProfiles.find { it.id == selectedProfileId }
+        ?: enabledProfiles.firstOrNull()
+        ?: profiles.first()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        ExposedDropdownMenuBox(
+            expanded = profileExpanded,
+            onExpandedChange = { profileExpanded = !profileExpanded },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            TextField(
+                value = currentProfile.name,
+                onValueChange = {},
+                label = { Text("当前 API 配置") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(),
+                readOnly = true,
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileExpanded)
+                },
+                shape = RoundedCornerShape(14.dp)
+            )
+            ExposedDropdownMenu(
+                expanded = profileExpanded,
+                onDismissRequest = { profileExpanded = false }
+            ) {
+                if (enabledProfiles.isEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("暂无可用配置") },
+                        onClick = { profileExpanded = false }
+                    )
+                } else {
+                    enabledProfiles.forEach { p ->
+                        DropdownMenuItem(
+                            text = { Text(p.name) },
+                            onClick = {
+                                onProfileSelected(p.id)
+                                profileExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(messages) { (role, content) ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (role == "user")
+                            MaterialTheme.colorScheme.primaryContainer
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = content,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (role == "ai") {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { onSpeak(content, 1.0f) }) {
+                                    Text("朗读")
+                                }
+                                TextButton(onClick = {
+                                    onSaveHistory(content, "AI回复", 1.0f)
+                                }) {
+                                    Text("保存")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("输入消息") },
+                shape = RoundedCornerShape(14.dp)
+            )
+            Button(
+                onClick = {
+                    if (input.isEmpty() || isSending) return@Button
+                    val userMsg = input
+                    messages = messages + ("user" to userMsg)
+                    input = ""
+                    isSending = true
+                    scope.launch {
+                        apiService.chat(
+                            prompt = userMsg,
+                            profile = currentProfile,
+                            onSuccess = { reply ->
+                                messages = messages + ("ai" to reply)
+                                isSending = false
+                            },
+                            onError = { error ->
+                                messages = messages + ("ai" to "错误: $error")
+                                isSending = false
+                            }
+                        )
+                    }
+                },
+                enabled = !isSending && input.isNotEmpty(),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.height(56.dp)
+            ) {
+                Text(if (isSending) "..." else "发送")
             }
         }
     }
@@ -604,203 +511,239 @@ fun BasicScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    isDarkMode: Boolean,
-    initialProvider: String,
-    initialModel: String,
-    initialApiKey: String,
-    onDarkModeChanged: (Boolean) -> Unit,
-    onProviderChanged: (String) -> Unit,
-    onModelChanged: (String) -> Unit,
-    onApiKeyChanged: (String) -> Unit,
-    onCustomUrlChanged: (String) -> Unit,
-    onCustomModelChanged: (String) -> Unit
+    profiles: List<ApiProfile>,
+    onProfilesChanged: (List<ApiProfile>) -> Unit
 ) {
-    var apiKey by remember { mutableStateOf(initialApiKey) }
-    var provider by remember { mutableStateOf(initialProvider) }
-    var model by remember { mutableStateOf(initialModel) }
-    var customUrl by remember { mutableStateOf("") }
-    var customModel by remember { mutableStateOf("") }
-    var providerExpanded by remember { mutableStateOf(false) }
-    var modelExpanded by remember { mutableStateOf(false) }
-
-    val providers = AiProviders.providers.map { it.name }
-    val providerObj = AiProviders.providers.find { it.name == provider }
-    val models = providerObj?.models ?: emptyList()
+    var showDialog by remember { mutableStateOf(false) }
+    var editingProfile by remember { mutableStateOf<ApiProfile?>(null) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Card(
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("深色模式", style = MaterialTheme.typography.bodyLarge)
-                Switch(
-                    checked = isDarkMode,
-                    onCheckedChange = onDarkModeChanged
-                )
+            Text("API 配置池", style = MaterialTheme.typography.titleLarge)
+            IconButton(onClick = {
+                editingProfile = null
+                showDialog = true
+            }) {
+                Icon(Icons.Default.Add, contentDescription = "添加")
             }
         }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Text("AI 提供商", style = MaterialTheme.typography.titleMedium)
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                ExposedDropdownMenuBox(
-                    expanded = providerExpanded,
-                    onExpandedChange = { providerExpanded = !providerExpanded },
-                    modifier = Modifier.fillMaxWidth()
+            items(profiles) { profile ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
                 ) {
-                    TextField(
-                        value = provider,
-                        onValueChange = {},
-                        label = { Text("选择") },
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .menuAnchor(),
-                        readOnly = true,
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerExpanded)
-                        },
-                        shape = RoundedCornerShape(14.dp)
-                    )
-
-                    ExposedDropdownMenu(
-                        expanded = providerExpanded,
-                        onDismissRequest = { providerExpanded = false }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        providers.forEach { name ->
-                            DropdownMenuItem(
-                                text = { Text(name) },
-                                onClick = {
-                                    provider = name
-                                    providerExpanded = false
-                                    val p = AiProviders.providers.find { it.name == name }
-                                    if (p != null && p.models.isNotEmpty()) {
-                                        model = p.defaultModel
-                                        onModelChanged(model)
-                                    }
-                                    onProviderChanged(provider)
-                                }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "类型: ${profile.providerType}",
+                                style = MaterialTheme.typography.bodySmall
                             )
+                            Text(
+                                "模型: ${profile.model}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                if (profile.enabled) "已启用" else "已禁用",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        IconButton(onClick = {
+                            editingProfile = profile
+                            showDialog = true
+                        }) {
+                            Icon(Icons.Default.Edit, contentDescription = "编辑")
+                        }
+                        IconButton(onClick = {
+                            onProfilesChanged(profiles.filter { it.id != profile.id })
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "删除")
                         }
                     }
                 }
+            }
+        }
+    }
 
-                if (models.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(10.dp))
+    if (showDialog) {
+        var name by remember { mutableStateOf(editingProfile?.name ?: "") }
+        var providerType by remember { mutableStateOf(editingProfile?.providerType ?: "OpenAI") }
+        var baseUrl by remember { mutableStateOf(editingProfile?.baseUrl ?: "") }
+        var apiKey by remember { mutableStateOf(editingProfile?.apiKey ?: "") }
+        var model by remember { mutableStateOf(editingProfile?.model ?: "") }
+        var enabled by remember { mutableStateOf(editingProfile?.enabled ?: true) }
+        var presetExpanded by remember { mutableStateOf(false) }
+        var typeExpanded by remember { mutableStateOf(false) }
 
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = {
+                Text(if (editingProfile == null) "添加 API 配置" else "编辑 API 配置")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ExposedDropdownMenuBox(
-                        expanded = modelExpanded,
-                        onExpandedChange = { modelExpanded = !modelExpanded },
+                        expanded = presetExpanded,
+                        onExpandedChange = { presetExpanded = !presetExpanded },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         TextField(
-                            value = model,
+                            value = "选择预设快速填充",
                             onValueChange = {},
-                            label = { Text("模型") },
+                            readOnly = true,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .menuAnchor(),
-                            readOnly = true,
                             trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded)
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded)
                             },
                             shape = RoundedCornerShape(14.dp)
                         )
-
                         ExposedDropdownMenu(
-                            expanded = modelExpanded,
-                            onDismissRequest = { modelExpanded = false }
+                            expanded = presetExpanded,
+                            onDismissRequest = { presetExpanded = false }
                         ) {
-                            models.forEach { name ->
+                            AiProviders.presets.forEach { preset ->
                                 DropdownMenuItem(
-                                    text = { Text(name) },
+                                    text = { Text(preset.name) },
                                     onClick = {
-                                        model = name
-                                        modelExpanded = false
-                                        onModelChanged(model)
+                                        name = preset.name
+                                        providerType = preset.providerType
+                                        baseUrl = preset.baseUrl
+                                        model = preset.defaultModel
+                                        presetExpanded = false
                                     }
                                 )
                             }
                         }
                     }
-                }
 
-                if (provider == "自定义") {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    TextField(
-                        value = customUrl,
-                        onValueChange = {
-                            customUrl = it
-                            onCustomUrlChanged(it)
-                        },
-                        label = { Text("API 地址") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp)
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("名称") },
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    TextField(
-                        value = customModel,
-                        onValueChange = {
-                            customModel = it
-                            onCustomModelChanged(it)
-                        },
+
+                    ExposedDropdownMenuBox(
+                        expanded = typeExpanded,
+                        onExpandedChange = { typeExpanded = !typeExpanded },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        TextField(
+                            value = providerType,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("提供商类型") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor(),
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = typeExpanded)
+                            },
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = typeExpanded,
+                            onDismissRequest = { typeExpanded = false }
+                        ) {
+                            listOf("OpenAI", "Gemini", "Claude", "Ollama").forEach { type ->
+                                DropdownMenuItem(
+                                    text = { Text(type) },
+                                    onClick = {
+                                        providerType = type
+                                        typeExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = baseUrl,
+                        onValueChange = { baseUrl = it },
+                        label = { Text("Base URL") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = apiKey,
+                        onValueChange = { apiKey = it },
+                        label = { Text("API Key") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = model,
+                        onValueChange = { model = it },
                         label = { Text("模型名称") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp)
+                        modifier = Modifier.fillMaxWidth()
                     )
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("启用")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(checked = enabled, onCheckedChange = { enabled = it })
+                    }
                 }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                TextField(
-                    value = apiKey,
-                    onValueChange = {
-                        apiKey = it
-                        onApiKeyChanged(it)
-                    },
-                    label = { Text("API Key") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
-                )
-
-                if (provider == "Ollama") {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "默认地址 http://localhost:11434",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (name.isNotBlank() && baseUrl.isNotBlank()) {
+                        val newProfile = editingProfile?.copy(
+                            name = name,
+                            providerType = providerType,
+                            baseUrl = baseUrl,
+                            apiKey = apiKey,
+                            model = model,
+                            enabled = enabled
+                        ) ?: ApiProfile(
+                            name = name,
+                            providerType = providerType,
+                            baseUrl = baseUrl,
+                            apiKey = apiKey,
+                            model = model,
+                            enabled = enabled
+                        )
+                        val newList = if (editingProfile == null) {
+                            profiles + newProfile
+                        } else {
+                            profiles.map {
+                                if (it.id == editingProfile?.id) newProfile else it
+                            }
+                        }
+                        onProfilesChanged(newList)
+                        showDialog = false
+                    }
+                }) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) {
+                    Text("取消")
                 }
             }
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Text("说明", style = MaterialTheme.typography.titleMedium)
-                Spacer(modifier = Modifier.height(6.dp))
-                Text("系统TTS 使用手机自带引擎，支持中文", style = MaterialTheme.typography.bodySmall)
-                Text("AI 对话模式需配置 API Key", style = MaterialTheme.typography.bodySmall)
-                Text("历史记录保存在本地", style = MaterialTheme.typography.bodySmall)
-            }
-        }
+        )
     }
 }
 
@@ -809,8 +752,22 @@ fun AboutScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Acknowledgements()
+        Text("Kokoro-82M-Android-Plus", style = MaterialTheme.typography.titleLarge)
+        Text("基于原项目二次开发", style = MaterialTheme.typography.bodyMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("原项目: https://github.com/puff-dayo/Kokoro-82M-Android", style = MaterialTheme.typography.bodySmall)
+        Text("本仓库: https://github.com/ZW-SYS/Kokoro-82M-Android-Plus", style = MaterialTheme.typography.bodySmall)
+        Text("开发者: ZW-SYS", style = MaterialTheme.typography.bodySmall)
+        Text("协议: GPL-3.0", style = MaterialTheme.typography.bodySmall)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("特别感谢", style = MaterialTheme.typography.titleMedium)
+        Text("Kokoro (Apache 2.0)", style = MaterialTheme.typography.bodySmall)
+        Text("Kokoro-ONNX (MIT)", style = MaterialTheme.typography.bodySmall)
+        Text("CMU 词典", style = MaterialTheme.typography.bodySmall)
+        Text("IPA 转写器 (GPL-3.0)", style = MaterialTheme.typography.bodySmall)
+        Text("Android NNAPI", style = MaterialTheme.typography.bodySmall)
     }
 }
