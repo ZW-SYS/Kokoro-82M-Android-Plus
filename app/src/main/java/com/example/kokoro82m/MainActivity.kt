@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -399,6 +398,8 @@ fun BasicScreen(
     onGenerateAudio: (String, String, Float, Boolean, Int, () -> Unit) -> Unit,
     onSettingsChanged: (String, Float) -> Unit
 ) {
+    val context = LocalContext.current
+
     var text by remember { mutableStateOf("") }
     var style by remember { mutableStateOf(initialStyle) }
     var speed by remember { mutableStateOf(initialSpeed) }
@@ -558,7 +559,7 @@ fun BasicScreen(
             Button(
                 onClick = {
                     if (text.isEmpty()) {
-                        Toast.makeText(LocalContext.current, "请输入文字", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "请输入文字", Toast.LENGTH_SHORT).show()
                         return@Button
                     }
                     isProcessing = true
@@ -579,7 +580,7 @@ fun BasicScreen(
             Button(
                 onClick = {
                     if (text.isEmpty()) {
-                        Toast.makeText(LocalContext.current, "请输入文字", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "请输入文字", Toast.LENGTH_SHORT).show()
                         return@Button
                     }
                     isProcessing = true
@@ -600,6 +601,7 @@ fun BasicScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     isDarkMode: Boolean,
