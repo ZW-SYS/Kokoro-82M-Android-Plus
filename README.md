@@ -1,102 +1,193 @@
 # Kokoro-82M-Android-Plus
 
-> 一个基于 Kokoro-82M 模型的 Android 离线 TTS（文字转语音）工具增强版。  
-> 主要改进：全中文界面、历史记录、深色模式、自动保存设置。
+基于 [puff-dayo/Kokoro-82M-Android](https://github.com/puff-dayo/Kokoro-82M-Android) 二次开发的安卓语音合成与 AI 对话应用。
+
+原项目是 Kokoro-82M 本地 TTS 引擎的安卓演示，只支持英文，中文报错，UI 基础。本项目在原项目基础上进行了大幅改造，把 TTS 引擎换成了安卓系统 TTS（支持中文），并加入了多提供商 AI 对话、会话管理、图片上传、云端 TTS 等功能。
 
 ---
 
-## 📌 项目定位
+## 界面预览
 
-**这不是一个全新的 TTS 引擎，而是在原项目基础上做界面和体验优化的修改版。**
+### 语音合成
 
-原项目（Kokoro-82M-Android）是一个优秀的 Android TTS 演示工具，但界面为英文、功能较为基础。本版本在此之上进行了多项增强，旨在提供更好的用户体验。
+![语音合成](preview/01-synthesis.png)
 
----
+支持系统 TTS 和云端 TTS 两种模式，可调节语速，一键播放或保存到历史。
 
-## 🎯 原项目做了什么
+### AI 聊天
 
-- 基于 Kokoro-82M 模型（8200 万参数，轻量高效）
-- 支持 **50+ 种预设音色**（如 af_sarah、am_adam 等）
-- 支持 **语速调节**（0.5x ~ 2.0x）
-- **完全离线运行**，无需联网
-- 基于 ONNX Runtime，**CPU 即可流畅运行**
-- 支持合成后播放和保存为音频文件
+![AI 聊天](preview/02-chat.png)
 
----
+支持 11 种 AI 提供商，会话管理，模型切换，图片上传。
 
-## ✨ 本版本新增功能（与原版对比）
+### 历史记录
 
-| 功能 | 原版 | 本版本 |
-|------|------|--------|
-| 界面语言 | 英文 | ✅ 全中文 |
-| 历史记录 | ❌ 无 | ✅ 自动保存，支持回放和删除 |
-| 深色模式 | ❌ 无 | ✅ 一键切换 |
-| 自动保存设置 | ❌ 无 | ✅ 音色和语速自动记忆 |
-| 界面设计 | 基础 | ✅ 卡片式、圆角、优化布局 |
-| 上次合成预览 | ❌ 无 | ✅ 首页显示最近一条合成 |
-| 设置页面 | ❌ 无 | ✅ 集中管理深色模式等 |
-| 底部导航 | 3 项 | ✅ 5 项（合成/混合/历史/设置/关于） |
+![历史记录](preview/03-history.png)
 
----
+所有合成记录保存在本地，支持点击回放和导出 JSON。
 
-## ⚠️ 重要限制（请务必阅读）
+### 设置
 
-### 关于语言支持
+![设置](preview/04-settings.png)
 
-**当前版本仅支持英文合成，中文会报错 `Unknown symbol: 这`。**
+管理多个 AI API 配置，支持测试连接和自动获取模型。
 
-原因如下：
-- 原项目（Kokoro-82M-Android）的 TTS 引擎虽然基于 Kokoro-82M 模型，但**前端音素转换器只实现了英文（基于 CMUdict）**。
-- 中文、日语等语言的音素映射表（词典）未集成，因此无法处理中文字符。
-- 我们做的界面中文化**不影响 TTS 引擎本身**，两者是独立的。
+### 关于
 
-**所以：**
-- 输入英文 → ✅ 正常合成
-- 输入中文 → ❌ 报错
-- 输入英文+中文混合 → ❌ 报错（含中文即失败）
+![关于](preview/05-about.png)
 
-**未来计划**：
-- v1.1.0 计划引入系统 TTS 作为中文备用引擎
-- v1.2.0 计划集成中文音素词典，让 Kokoro 引擎真正支持中文
+项目信息、开源协议和特别感谢。
 
 ---
 
-## 📱 如何使用（给普通用户）
+## 功能特性
 
-### 基本操作
+### 语音合成
 
-1. **打开 APP**，默认进入「合成」页面
-2. **输入文字**：在文本框中输入你想听的英文文字
-3. **选择音色**：点击「音色」下拉框，从 50+ 种音色中选择
-4. **调节语速**：拖动滑块（0.5x ~ 2.0x）
-5. **点击按钮**：
-   - 「播放」→ 合成并播放（不保存）
-   - 「保存」→ 合成、播放、并保存到历史记录
+- 系统 TTS：调用安卓系统自带引擎，支持中文，离线可用
+- 云端 TTS：兼容 OpenAI `/v1/audio/speech` 接口，音质更好，音色可选
+- 语速调节：0.5x ~ 2.0x
+- 一键播放与保存：保存后自动进入历史记录
 
-### 查看历史
+### AI 对话
 
-- 点击底部「历史」标签
-- 所有保存的合成记录按时间排列
-- 每条记录右侧有「播放」和「删除」按钮
+支持 11 种 AI 提供商：
 
-### 切换深色模式
+| 提供商 | 类型 | 默认模型 |
+|---|---|---|
+| DeepSeek | OpenAI 兼容 | deepseek-chat |
+| OpenAI | OpenAI 兼容 | gpt-4o-mini |
+| Google Gemini | Gemini 原生 | gemini-1.5-flash |
+| OpenRouter | OpenAI 兼容 | openai/gpt-3.5-turbo |
+| Claude | Claude 原生 | claude-3-haiku |
+| Ollama | 本地部署 | llama3 |
+| 阿里云百炼 | OpenAI 兼容 | qwen-turbo |
+| Moonshot | OpenAI 兼容 | moonshot-v1-8k |
+| 智谱 | OpenAI 兼容 | glm-4 |
+| xAI | OpenAI 兼容 | grok-1 |
+| 自定义 | OpenAI / Gemini / Claude / Ollama | 手动填写 |
 
-- 点击底部「设置」标签
-- 打开「深色模式」开关
+主要能力：
+
+- API 配置池：添加、编辑、删除多个配置，自由切换
+- 测试连接：发送一条测试消息，验证 API Key 和地址是否可用
+- 自动获取模型：从 API 拉取可用模型列表并保存
+- 会话式对话：每次新建是独立会话，支持重命名、删除
+- 对话内切换模型：同一会话内可切换不同模型
+- 消息自动保存：所有对话内容自动持久化
+- 图片上传：支持发送图片，多模态模型可识别图片内容
+
+### 历史记录
+
+- 所有合成内容保存在本地 JSON 文件
+- 点击记录即可回放
+- 支持一键导出为 JSON 文件并分享
+
+### 界面
+
+- 卡片式布局，圆角风格
+- 深色模式，一键切换
+- 动画过渡：页面切换 Crossfade，消息和列表项淡入 + 上滑
 
 ---
 
-## 🛠️ 本地编译（给开发者）
+## 与原项目的区别
 
-如果你想自己编译 APK：
+| 项目 | 原项目 | 本项目 |
+|---|---|---|
+| TTS 引擎 | Kokoro-82M 本地模型 | 系统 TTS + 云端 TTS |
+| 中文支持 | 不支持 | 支持 |
+| AI 对话 | 无 | 支持 11 种提供商 |
+| 会话管理 | 无 | 支持新建、重命名、删除 |
+| 图片上传 | 无 | 支持 |
+| 历史记录 | 无 | 支持回放与导出 JSON |
+| 界面 | 基础 | 卡片式布局 + 动画 |
+| 语言 | 英文 | 中文 |
 
-```bash
-# 克隆项目
+原项目的 Kokoro 引擎相关文件（ModelManager、PhonemeConverter、Tokenizer 等）已在本项目中移除，改为使用系统 TTS。
+
+---
+
+## 技术栈
+
+- 语言：Kotlin 2.0
+- UI：Jetpack Compose + Material 3
+- 网络：OkHttp 4.12
+- 异步：Kotlin Coroutines
+- 序列化：Android 内置 org.json
+- TTS：Android TextToSpeech API + MediaPlayer
+
+---
+
+## 开发环境
+
+- Android Studio 或 Termux
+- Kotlin 2.0
+- JDK 17
+- Android SDK 34
+- Min SDK 26
+- Target SDK 34
+
+---
+
+## 编译与安装
+
+### 方式一：GitHub Actions 云端编译（推荐）
+
+本项目已配置 GitHub Actions，推送到 `master` 分支后自动构建。
+
+1. 查看构建状态：https://github.com/ZW-SYS/Kokoro-82M-Android-Plus/actions
+2. 构建完成后，点进绿色的运行记录，页面底部 Artifacts 区域下载 app-debug.zip
+3. 解压得到 app-debug.apk，传到手机安装
+
+### 方式二：本地编译
+
+```
 git clone https://github.com/ZW-SYS/Kokoro-82M-Android-Plus.git
-
-# 进入项目目录
 cd Kokoro-82M-Android-Plus
+./gradlew assembleDebug
+```
 
-# 编译（需要 JDK 17+）
-./gradlew assembleDebug   # Linux/macOS
-gradlew.bat assembleDebug # Windows
+生成的 APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。
+
+---
+
+## 项目结构
+
+```
+app/src/main/java/com/example/kokoro82m/
+├── MainActivity.kt                主入口，所有界面
+├── screens/
+│   └── HistoryScreen.kt           历史记录页
+└── utils/
+    ├── ApiService.kt              AI 请求与 API 配置存储
+    ├── ChatHistoryRepository.kt   会话数据存储
+    ├── HistoryRepository.kt       合成历史存储
+    ├── ExportHelper.kt            历史导出 JSON
+    └── TtsService.kt              云端 TTS 服务
+```
+
+---
+
+## 开源协议
+
+GPL-3.0
+
+本项目基于 [puff-dayo/Kokoro-82M-Android](https://github.com/puff-dayo/Kokoro-82M-Android) 二次开发，遵循 GPL-3.0 协议开源。任何基于本项目的衍生作品也必须以 GPL-3.0 协议开源。
+
+---
+
+## 特别感谢
+
+- [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache 2.0)
+- [Kokoro-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) (MIT)
+- CMU 词典
+- IPA 转写器 (GPL-3.0)
+- Android NNAPI
+- [puff-dayo](https://github.com/puff-dayo) — 原项目作者
+
+---
+
+## 开发者
+
+ZW-SYS
