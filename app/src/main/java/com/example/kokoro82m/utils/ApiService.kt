@@ -46,6 +46,7 @@ data class ApiProfile(
     var baseUrl: String = "",
     var apiKey: String = "",
     var model: String = "",
+    var models: List<String> = emptyList(),
     var enabled: Boolean = true
 )
 
@@ -61,6 +62,14 @@ object ApiProfileStore {
             val arr = JSONArray(json)
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
+                val modelsArr = obj.optJSONArray("models")
+                val models = mutableListOf<String>()
+                if (modelsArr != null) {
+                    for (j in 0 until modelsArr.length()) {
+                        val m = modelsArr.optString(j, "")
+                        if (m.isNotEmpty()) models.add(m)
+                    }
+                }
                 list.add(
                     ApiProfile(
                         id = obj.optString("id", UUID.randomUUID().toString()),
@@ -69,6 +78,7 @@ object ApiProfileStore {
                         baseUrl = obj.optString("baseUrl", ""),
                         apiKey = obj.optString("apiKey", ""),
                         model = obj.optString("model", ""),
+                        models = models,
                         enabled = obj.optBoolean("enabled", true)
                     )
                 )
@@ -91,6 +101,9 @@ object ApiProfileStore {
             obj.put("baseUrl", p.baseUrl)
             obj.put("apiKey", p.apiKey)
             obj.put("model", p.model)
+            val modelsArr = JSONArray()
+            for (m in p.models) modelsArr.put(m)
+            obj.put("models", modelsArr)
             obj.put("enabled", p.enabled)
             arr.put(obj)
         }
@@ -100,13 +113,13 @@ object ApiProfileStore {
 
 class ApiService {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
         .build()
 
     suspend fun chat(
-        prompt: String,
+        messages: List<ChatMessage>,
         profile: ApiProfile,
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit
@@ -114,7 +127,7 @@ class ApiService {
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(profile)
-                val bodyStr = buildBody(prompt, profile)
+                val bodyStr = buildBody(messages, profile)
                 val body = bodyStr.toRequestBody("application/json; charset=utf-8".toMediaType())
 
                 val builder = Request.Builder().url(url)
@@ -131,7 +144,7 @@ class ApiService {
                     withContext(Dispatchers.Main) { onError("HTTP ${response.code}: $responseBody") }
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { onError(e.message ?: "网络请求失败") }
+                withContext(Dispatchers.Main) { onError(e.message ?: "Network error") }
             }
         }
     }
@@ -143,7 +156,8 @@ class ApiService {
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(profile)
-                val bodyStr = buildBody("Hi", profile)
+                val testMsg = listOf(ChatMessage("user", "Hi"))
+                val bodyStr = buildBody(testMsg, profile)
                 val body = bodyStr.toRequestBody("application/json; charset=utf-8".toMediaType())
 
                 val builder = Request.Builder().url(url)
@@ -156,15 +170,15 @@ class ApiService {
                 if (response.isSuccessful) {
                     val reply = extractReply(responseBody, profile)
                     if (reply.startsWith("无法解析")) {
-                        withContext(Dispatchers.Main) { onResult(false, "响应格式异常") }
+                        withContext(Dispatchers.Main) { onResult(false, "Response format error") }
                     } else {
-                        withContext(Dispatchers.Main) { onResult(true, "连接成功") }
+                        withContext(Dispatchers.Main) { onResult(true, "Connected") }
                     }
                 } else {
                     withContext(Dispatchers.Main) { onResult(false, "HTTP ${response.code}") }
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { onResult(false, e.message ?: "网络错误") }
+                withContext(Dispatchers.Main) { onResult(false, e.message ?: "Network error") }
             }
         }
     }
@@ -178,7 +192,7 @@ class ApiService {
             try {
                 val modelsUrl = buildModelsUrl(profile)
                 if (modelsUrl == null) {
-                    withContext(Dispatchers.Main) { onError("该类型不支持自动获取模型") }
+                    withContext(Dispatchers.Main) { onError("Auto fetch not supported for this type") }
                     return@withContext
                 }
 
@@ -199,12 +213,12 @@ class ApiService {
 
                 val models = extractModels(responseBody, profile)
                 if (models.isEmpty()) {
-                    withContext(Dispatchers.Main) { onError("未获取到模型") }
+                    withContext(Dispatchers.Main) { onError("No models found") }
                 } else {
                     withContext(Dispatchers.Main) { onSuccess(models) }
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { onError(e.message ?: "网络错误") }
+                withContext(Dispatchers.Main) { onError(e.message ?: "Network error") }
             }
         }
     }
@@ -293,46 +307,112 @@ class ApiService {
         }
     }
 
-    private fun buildBody(prompt: String, profile: ApiProfile): String {
+    private fun buildBody(messages: List<ChatMessage>, profile: ApiProfile): String {
         val json = JSONObject()
         return when (profile.providerType) {
             "Gemini" -> {
                 val contents = JSONArray()
-                val parts = JSONArray()
-                val textObj = JSONObject()
-                textObj.put("text", prompt)
-                parts.put(textObj)
-                val contentObj = JSONObject()
-                contentObj.put("parts", parts)
-                contents.put(contentObj)
+                for (msg in messages) {
+                    val parts = JSONArray()
+                    if (!msg.content.isNullOrEmpty()) {
+                        val textObj = JSONObject()
+                        textObj.put("text", msg.content)
+                        parts.put(textObj)
+                    }
+                    if (msg.imageBase64 != null && msg.imageMimeType != null) {
+                        val inlineData = JSONObject()
+                        inlineData.put("mime_type", msg.imageMimeType)
+                        inlineData.put("data", msg.imageBase64)
+                        val imgObj = JSONObject()
+                        imgObj.put("inline_data", inlineData)
+                        parts.put(imgObj)
+                    }
+                    val contentObj = JSONObject()
+                    contentObj.put("role", if (msg.role == "ai") "model" else "user")
+                    contentObj.put("parts", parts)
+                    contents.put(contentObj)
+                }
                 json.put("contents", contents)
                 json.toString()
             }
             "Claude" -> {
                 json.put("model", profile.model)
-                json.put("max_tokens", 1024)
+                json.put("max_tokens", 2048)
                 val msgs = JSONArray()
-                val msg = JSONObject()
-                msg.put("role", "user")
-                msg.put("content", prompt)
-                msgs.put(msg)
+                for (msg in messages) {
+                    if (msg.role == "ai") {
+                        val m = JSONObject()
+                        m.put("role", "assistant")
+                        m.put("content", msg.content)
+                        msgs.put(m)
+                    } else {
+                        val m = JSONObject()
+                        m.put("role", "user")
+                        if (msg.imageBase64 != null && msg.imageMimeType != null) {
+                            val contentArr = JSONArray()
+                            if (!msg.content.isNullOrEmpty()) {
+                                val textPart = JSONObject()
+                                textPart.put("type", "text")
+                                textPart.put("text", msg.content)
+                                contentArr.put(textPart)
+                            }
+                            val imgPart = JSONObject()
+                            imgPart.put("type", "image")
+                            val source = JSONObject()
+                            source.put("type", "base64")
+                            source.put("media_type", msg.imageMimeType)
+                            source.put("data", msg.imageBase64)
+                            imgPart.put("source", source)
+                            contentArr.put(imgPart)
+                            m.put("content", contentArr)
+                        } else {
+                            m.put("content", msg.content)
+                        }
+                        msgs.put(m)
+                    }
+                }
                 json.put("messages", msgs)
                 json.toString()
             }
             "Ollama" -> {
+                val lastUser = messages.lastOrNull { it.role == "user" }
                 json.put("model", profile.model)
-                json.put("prompt", prompt)
+                json.put("prompt", lastUser?.content ?: "")
                 json.put("stream", false)
+                if (lastUser?.imageBase64 != null) {
+                    val imgs = JSONArray()
+                    imgs.put(lastUser.imageBase64)
+                    json.put("images", imgs)
+                }
                 json.toString()
             }
             else -> {
                 json.put("model", profile.model)
                 json.put("stream", false)
                 val msgs = JSONArray()
-                val msg = JSONObject()
-                msg.put("role", "user")
-                msg.put("content", prompt)
-                msgs.put(msg)
+                for (msg in messages) {
+                    val m = JSONObject()
+                    m.put("role", if (msg.role == "ai") "assistant" else "user")
+                    if (msg.imageBase64 != null && msg.imageMimeType != null) {
+                        val contentArr = JSONArray()
+                        if (!msg.content.isNullOrEmpty()) {
+                            val textPart = JSONObject()
+                            textPart.put("type", "text")
+                            textPart.put("text", msg.content)
+                            contentArr.put(textPart)
+                        }
+                        val imgPart = JSONObject()
+                        imgPart.put("type", "image_url")
+                        val imgUrl = JSONObject()
+                        imgUrl.put("url", "data:${msg.imageMimeType};base64,${msg.imageBase64}")
+                        imgPart.put("image_url", imgUrl)
+                        contentArr.put(imgPart)
+                        m.put("content", contentArr)
+                    } else {
+                        m.put("content", msg.content)
+                    }
+                    msgs.put(m)
+                }
                 json.put("messages", msgs)
                 json.toString()
             }
