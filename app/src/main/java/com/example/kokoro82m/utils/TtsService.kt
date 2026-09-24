@@ -8,7 +8,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -21,6 +20,8 @@ data class TtsProfile(
     var apiKey: String = "",
     var model: String = "tts-1",
     var voice: String = "alloy",
+    var models: List<String> = emptyList(),
+    var voices: List<String> = emptyList(),
     var enabled: Boolean = false
 )
 
@@ -41,6 +42,8 @@ object TtsProfileStore {
                 apiKey = obj.optString("apiKey", ""),
                 model = obj.optString("model", "tts-1"),
                 voice = obj.optString("voice", "alloy"),
+                models = jsonToList(obj.optString("models", "")),
+                voices = jsonToList(obj.optString("voices", "")),
                 enabled = obj.optBoolean("enabled", false)
             )
         } catch (_: Exception) {
@@ -57,9 +60,59 @@ object TtsProfileStore {
         obj.put("apiKey", profile.apiKey)
         obj.put("model", profile.model)
         obj.put("voice", profile.voice)
+        obj.put("models", listToJson(profile.models))
+        obj.put("voices", listToJson(profile.voices))
         obj.put("enabled", profile.enabled)
         prefs.edit().putString(KEY, obj.toString()).apply()
     }
+
+    private fun listToJson(list: List<String>): String {
+        return list.joinToString("|")
+    }
+
+    private fun jsonToList(s: String): List<String> {
+        if (s.isBlank()) return emptyList()
+        return s.split("|").filter { it.isNotBlank() }
+    }
+}
+
+object TtsPresets {
+    val presets = listOf(
+        TtsProfile(
+            name = "OpenAI TTS",
+            baseUrl = "https://api.openai.com/v1/audio/speech",
+            model = "tts-1",
+            voice = "alloy",
+            models = listOf("tts-1", "tts-1-hd", "gpt-4o-mini-tts"),
+            voices = listOf("alloy", "echo", "fable", "onyx", "nova", "shimmer")
+        ),
+        TtsProfile(
+            name = "硅基流动",
+            baseUrl = "https://api.siliconflow.cn/v1/audio/speech",
+            model = "FunAudioLLM/CosyVoice2-0.5B",
+            voice = "alex",
+            models = listOf("FunAudioLLM/CosyVoice2-0.5B"),
+            voices = listOf("alex", "benjamin", "charles", "david", "anna", "bella", "claire", "diana")
+        ),
+        TtsProfile(
+            name = "自定义 (无 Key)",
+            baseUrl = "",
+            model = "",
+            voice = ""
+        )
+    )
+
+    val commonVoices = listOf(
+        "alloy", "echo", "fable", "onyx", "nova", "shimmer",
+        "alex", "benjamin", "charles", "david", "anna", "bella", "claire", "diana",
+        "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-YunjianNeural"
+    )
+
+    val commonModels = listOf(
+        "tts-1", "tts-1-hd", "gpt-4o-mini-tts",
+        "FunAudioLLM/CosyVoice2-0.5B",
+        "speech-01-turbo", "speech-01-hd"
+    )
 }
 
 class TtsService {
@@ -81,6 +134,11 @@ class TtsService {
         withContext(Dispatchers.IO) {
             try {
                 val url = profile.baseUrl
+                if (url.isBlank()) {
+                    withContext(Dispatchers.Main) { onError("未配置 TTS 地址") }
+                    return@withContext
+                }
+
                 val json = JSONObject()
                 json.put("model", profile.model)
                 json.put("input", text)
@@ -88,14 +146,17 @@ class TtsService {
                 json.put("response_format", "mp3")
 
                 val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                val request = Request.Builder()
+                val builder = Request.Builder()
                     .url(url)
-                    .addHeader("Authorization", "Bearer ${profile.apiKey}")
                     .addHeader("Content-Type", "application/json")
-                    .post(body)
-                    .build()
 
+                if (profile.apiKey.isNotBlank()) {
+                    builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
+                }
+
+                val request = builder.post(body).build()
                 val response = client.newCall(request).execute()
+
                 if (!response.isSuccessful) {
                     val errBody = response.body?.string() ?: ""
                     withContext(Dispatchers.Main) {
@@ -132,6 +193,86 @@ class TtsService {
         }
     }
 
+    suspend fun detectVoices(
+        profile: TtsProfile,
+        onResult: (List<String>) -> Unit
+    ) {
+        withContext(Dispatchers.IO) {
+            val available = mutableListOf<String>()
+            val candidates = if (profile.voices.isNotEmpty()) profile.voices else TtsPresets.commonVoices
+
+            for (voice in candidates) {
+                try {
+                    val json = JSONObject()
+                    json.put("model", profile.model)
+                    json.put("input", "hi")
+                    json.put("voice", voice)
+                    json.put("response_format", "mp3")
+
+                    val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                    val builder = Request.Builder()
+                        .url(profile.baseUrl)
+                        .addHeader("Content-Type", "application/json")
+                    if (profile.apiKey.isNotBlank()) {
+                        builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
+                    }
+
+                    val request = builder.post(body).build()
+                    val response = client.newCall(request).execute()
+                    if (response.isSuccessful) {
+                        val bytes = response.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            available.add(voice)
+                        }
+                    }
+                    response.close()
+                } catch (_: Exception) {}
+            }
+
+            withContext(Dispatchers.Main) { onResult(available) }
+        }
+    }
+
+    suspend fun detectModels(
+        profile: TtsProfile,
+        onResult: (List<String>) -> Unit
+    ) {
+        withContext(Dispatchers.IO) {
+            val available = mutableListOf<String>()
+            val candidates = if (profile.models.isNotEmpty()) profile.models else TtsPresets.commonModels
+
+            for (model in candidates) {
+                try {
+                    val json = JSONObject()
+                    json.put("model", model)
+                    json.put("input", "hi")
+                    json.put("voice", profile.voice.ifBlank { "alloy" })
+                    json.put("response_format", "mp3")
+
+                    val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                    val builder = Request.Builder()
+                        .url(profile.baseUrl)
+                        .addHeader("Content-Type", "application/json")
+                    if (profile.apiKey.isNotBlank()) {
+                        builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
+                    }
+
+                    val request = builder.post(body).build()
+                    val response = client.newCall(request).execute()
+                    if (response.isSuccessful) {
+                        val bytes = response.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            available.add(model)
+                        }
+                    }
+                    response.close()
+                } catch (_: Exception) {}
+            }
+
+            withContext(Dispatchers.Main) { onResult(available) }
+        }
+    }
+
     fun stop() {
         try {
             player?.stop()
@@ -139,38 +280,4 @@ class TtsService {
         } catch (_: Exception) {}
         player = null
     }
-}
-
-object TtsPresets {
-    val presets = listOf(
-        TtsProfile(
-            name = "OpenAI TTS",
-            baseUrl = "https://api.openai.com/v1/audio/speech",
-            model = "tts-1",
-            voice = "alloy"
-        ),
-        TtsProfile(
-            name = "OpenAI TTS HD",
-            baseUrl = "https://api.openai.com/v1/audio/speech",
-            model = "tts-1-hd",
-            voice = "nova"
-        ),
-        TtsProfile(
-            name = "硅基流动",
-            baseUrl = "https://api.siliconflow.cn/v1/audio/speech",
-            model = "FunAudioLLM/CosyVoice2-0.5B",
-            voice = "alex"
-        ),
-        TtsProfile(
-            name = "自定义",
-            baseUrl = "",
-            model = "",
-            voice = ""
-        )
-    )
-
-    val voices = listOf(
-        "alloy", "echo", "fable", "onyx", "nova", "shimmer",
-        "alex", "benjamin", "charles", "david", "anna", "bella", "claire", "diana"
-    )
 }

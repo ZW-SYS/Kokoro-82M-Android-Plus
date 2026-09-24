@@ -40,12 +40,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -84,17 +85,19 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
-import com.example.kokoro82m.screens.HistoryScreen
 import com.example.kokoro82m.utils.AiProviders
 import com.example.kokoro82m.utils.ApiProfile
 import com.example.kokoro82m.utils.ApiProfileStore
 import com.example.kokoro82m.utils.ApiService
+import com.example.kokoro82m.utils.BackupHelper
+import com.example.kokoro82m.utils.ChatAttachment
 import com.example.kokoro82m.utils.ChatHistoryRepository
 import com.example.kokoro82m.utils.ChatMessage
 import com.example.kokoro82m.utils.ChatSession
-import com.example.kokoro82m.utils.HistoryRepository
+import com.example.kokoro82m.utils.FileHelper
 import com.example.kokoro82m.utils.TtsPresets
 import com.example.kokoro82m.utils.TtsProfile
 import com.example.kokoro82m.utils.TtsProfileStore
@@ -106,9 +109,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 class MyApplication : Application() {
@@ -120,7 +120,6 @@ class MyApplication : Application() {
 
 class MainActivity : ComponentActivity() {
     private lateinit var prefs: SharedPreferences
-    private lateinit var historyRepo: HistoryRepository
     private lateinit var chatRepo: ChatHistoryRepository
     private val apiService = ApiService()
     private val ttsService = TtsService()
@@ -131,7 +130,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         prefs = getSharedPreferences("kokoro_settings", Context.MODE_PRIVATE)
-        historyRepo = HistoryRepository(this)
         chatRepo = ChatHistoryRepository(this)
 
         tts = TextToSpeech(this) { status ->
@@ -144,19 +142,24 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            KokoroTheme {
+            var isDarkMode by remember { mutableStateOf(prefs.getBoolean("dark_mode", false)) }
+            LaunchedEffect(isDarkMode) {
+                prefs.edit().putBoolean("dark_mode", isDarkMode).apply()
+            }
+            KokoroTheme(darkTheme = isDarkMode) {
                 LaunchedEffect(Unit) {
                     WindowCompat.setDecorFitsSystemWindows(window, false)
                 }
                 MainScreen(
-                    historyRepo = historyRepo,
+                    isDarkMode = isDarkMode,
+                    onDarkModeChanged = { isDarkMode = it },
                     chatRepo = chatRepo,
                     apiService = apiService,
                     onSpeak = { text, speed, useCloud ->
                         if (useCloud) {
-                            val profile = TtsProfileStore.load(this)
-                            if (profile.baseUrl.isBlank() || profile.apiKey.isBlank()) {
-                                Toast.makeText(this, "请先在设置中配置云端 TTS", Toast.LENGTH_SHORT).show()
+                            val profile = TtsProfileStore.load(this@MainActivity)
+                            if (profile.baseUrl.isBlank()) {
+                                Toast.makeText(this@MainActivity, "请先在设置中配置云端 TTS", Toast.LENGTH_SHORT).show()
                             } else {
                                 scope.launch {
                                     ttsService.speak(
@@ -175,10 +178,6 @@ class MainActivity : ComponentActivity() {
                             tts?.setPitch(1.0f)
                             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
                         }
-                    },
-                    onSaveHistory = { text, style, speed ->
-                        val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date())
-                        historyRepo.addHistory(text, style, speed, timeStr)
                     }
                 )
             }
@@ -196,7 +195,7 @@ class MainActivity : ComponentActivity() {
 sealed class Screen(val title: String) {
     object Basic : Screen("语音合成")
     object Chat : Screen("AI 对话")
-    object History : Screen("历史记录")
+    object ImageGen : Screen("AI 生图")
     object Settings : Screen("设置")
     object About : Screen("关于")
 }
@@ -204,17 +203,22 @@ sealed class Screen(val title: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    historyRepo: HistoryRepository,
+    isDarkMode: Boolean,
+    onDarkModeChanged: (Boolean) -> Unit,
     chatRepo: ChatHistoryRepository,
     apiService: ApiService,
-    onSpeak: (String, Float, Boolean) -> Unit,
-    onSaveHistory: (String, String, Float) -> Unit
+    onSpeak: (String, Float, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Basic) }
-    var profiles: List<ApiProfile> by remember { mutableStateOf(ApiProfileStore.load(context)) }
-    var currentSessionId by remember { mutableStateOf<String?>(null) }
+    var profiles by remember { mutableStateOf(ApiProfileStore.load(context)) }
     var ttsProfile by remember { mutableStateOf(TtsProfileStore.load(context)) }
+    var currentSessionId by remember { mutableStateOf<String?>(null) }
+
+    fun reloadAll() {
+        profiles = ApiProfileStore.load(context)
+        ttsProfile = TtsProfileStore.load(context)
+    }
 
     if (currentSessionId != null) {
         ChatDetailScreen(
@@ -223,7 +227,6 @@ fun MainScreen(
             apiService = apiService,
             profiles = profiles,
             onSpeak = { text, speed -> onSpeak(text, speed, ttsProfile.enabled) },
-            onSaveHistory = onSaveHistory,
             onBack = { currentSessionId = null }
         )
         return
@@ -255,10 +258,10 @@ fun MainScreen(
                     onClick = { currentScreen = Screen.Chat }
                 )
                 NavigationBarItem(
-                    icon = { Icon(Icons.Default.List, contentDescription = null) },
-                    label = { Text("历史") },
-                    selected = currentScreen == Screen.History,
-                    onClick = { currentScreen = Screen.History }
+                    icon = { Icon(Icons.Default.Image, contentDescription = null) },
+                    label = { Text("生图") },
+                    selected = currentScreen == Screen.ImageGen,
+                    onClick = { currentScreen = Screen.ImageGen }
                 )
                 NavigationBarItem(
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -284,22 +287,23 @@ fun MainScreen(
                 when (screen) {
                     Screen.Basic -> BasicScreen(
                         ttsProfile = ttsProfile,
-                        onSpeak = onSpeak,
-                        onSaveHistory = onSaveHistory
+                        onSpeak = onSpeak
                     )
                     Screen.Chat -> SessionListScreen(
                         chatRepo = chatRepo,
                         profiles = profiles,
                         onOpenSession = { currentSessionId = it }
                     )
-                    Screen.History -> HistoryScreen(
-                        historyRepo = historyRepo,
-                        onPlay = { text -> onSpeak(text, 1.0f, ttsProfile.enabled) }
+                    Screen.ImageGen -> ImageGenScreen(
+                        apiService = apiService,
+                        profiles = profiles
                     )
                     Screen.Settings -> SettingsScreen(
                         apiService = apiService,
                         profiles = profiles,
                         ttsProfile = ttsProfile,
+                        isDarkMode = isDarkMode,
+                        onDarkModeChanged = onDarkModeChanged,
                         onProfilesChanged = { newProfiles ->
                             profiles = newProfiles
                             ApiProfileStore.save(context, newProfiles)
@@ -307,7 +311,8 @@ fun MainScreen(
                         onTtsProfileChanged = { newTts ->
                             ttsProfile = newTts
                             TtsProfileStore.save(context, newTts)
-                        }
+                        },
+                        onBackupRestored = { reloadAll() }
                     )
                     Screen.About -> AboutScreen()
                 }
@@ -320,8 +325,7 @@ fun MainScreen(
 @Composable
 fun BasicScreen(
     ttsProfile: TtsProfile,
-    onSpeak: (String, Float, Boolean) -> Unit,
-    onSaveHistory: (String, String, Float) -> Unit
+    onSpeak: (String, Float, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var text by remember { mutableStateOf("") }
@@ -434,15 +438,14 @@ fun BasicScreen(
                     }
                     isProcessing = true
                     onSpeak(text, speed, useCloud)
-                    onSaveHistory(text, if (useCloud) "云端TTS" else "系统TTS", speed)
                     isProcessing = false
-                    Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "已朗读", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.weight(1f).height(50.dp),
                 enabled = !isProcessing && text.isNotEmpty(),
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Text("保存")
+                Text("重读")
             }
         }
     }
@@ -457,7 +460,7 @@ fun SessionListScreen(
 ) {
     var sessions by remember { mutableStateOf(chatRepo.loadAll()) }
     var selectedProfileId by remember {
-        mutableStateOf(profiles.firstOrNull { it.enabled }?.id ?: profiles.first().id)
+        mutableStateOf(profiles.firstOrNull { it.enabled && it.modelType != "image" }?.id ?: profiles.first().id)
     }
     var profileExpanded by remember { mutableStateOf(false) }
     var renameSession by remember { mutableStateOf<ChatSession?>(null) }
@@ -467,7 +470,9 @@ fun SessionListScreen(
         sessions = chatRepo.loadAll()
     }
 
-    val currentProfile = profiles.find { it.id == selectedProfileId }
+    val chatProfiles = profiles.filter { it.enabled && it.modelType != "image" }
+    val currentProfile = chatProfiles.find { it.id == selectedProfileId }
+        ?: chatProfiles.firstOrNull()
     val filtered = sessions.filter { it.profileId == selectedProfileId }
         .sortedByDescending { it.updatedAt }
 
@@ -477,140 +482,153 @@ fun SessionListScreen(
                 .fillMaxSize()
                 .padding(16.dp)
         ) {
-            ExposedDropdownMenuBox(
-                expanded = profileExpanded,
-                onExpandedChange = { profileExpanded = !profileExpanded },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                TextField(
-                    value = currentProfile?.name ?: "无配置",
-                    onValueChange = {},
-                    label = { Text("当前 API 配置") },
-                    readOnly = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .menuAnchor(),
-                    trailingIcon = {
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileExpanded)
-                    },
-                    shape = RoundedCornerShape(14.dp)
-                )
-                ExposedDropdownMenu(
+            if (chatProfiles.isEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "还没有可用的聊天配置，请先去设置里添加",
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            } else {
+                ExposedDropdownMenuBox(
                     expanded = profileExpanded,
-                    onDismissRequest = { profileExpanded = false }
+                    onExpandedChange = { profileExpanded = !profileExpanded },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    profiles.filter { it.enabled }.forEach { p ->
-                        DropdownMenuItem(
-                            text = { Text(p.name) },
-                            onClick = {
-                                selectedProfileId = p.id
-                                profileExpanded = false
-                            }
+                    TextField(
+                        value = currentProfile?.name ?: "无配置",
+                        onValueChange = {},
+                        label = { Text("当前 API 配置") },
+                        readOnly = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileExpanded)
+                        },
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    ExposedDropdownMenu(
+                        expanded = profileExpanded,
+                        onDismissRequest = { profileExpanded = false }
+                    ) {
+                        chatProfiles.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    selectedProfileId = p.id
+                                    profileExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "对话 (${filtered.size})",
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                AnimatedVisibility(
+                    visible = filtered.isEmpty(),
+                    enter = fadeIn()
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = "还没有对话，点右下角 + 新建",
+                            modifier = Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                text = "对话 (${filtered.size})",
-                style = MaterialTheme.typography.titleMedium
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            AnimatedVisibility(
-                visible = filtered.isEmpty(),
-                enter = fadeIn()
-            ) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "还没有对话，点右下角 + 新建",
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(filtered) { s ->
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn(tween(220)) + slideInVertically(
-                            initialOffsetY = { it / 4 },
-                            animationSpec = tween(220)
-                        )
-                    ) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            ),
-                            onClick = { onOpenSession(s.id) }
+                    items(filtered) { s ->
+                        AnimatedVisibility(
+                            visible = true,
+                            enter = fadeIn(tween(220)) + slideInVertically(
+                                initialOffsetY = { it / 4 },
+                                animationSpec = tween(220)
+                            )
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                onClick = { onOpenSession(s.id) }
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(s.name, style = MaterialTheme.typography.titleMedium)
-                                    val preview = s.messages.lastOrNull()?.content ?: "空对话"
-                                    Text(
-                                        text = preview.take(40),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 1
-                                    )
-                                    Text(
-                                        text = "${s.messages.size} 条 | 模型 ${s.model}",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                                IconButton(onClick = {
-                                    renameSession = s
-                                    renameText = s.name
-                                }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "重命名")
-                                }
-                                IconButton(onClick = {
-                                    chatRepo.delete(s.id)
-                                    refresh()
-                                }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "删除")
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(s.name, style = MaterialTheme.typography.titleMedium)
+                                        val preview = s.messages.lastOrNull()?.content ?: "空对话"
+                                        Text(
+                                            text = preview.take(40),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            text = "${s.messages.size} 条 | 模型 ${s.model}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    IconButton(onClick = {
+                                        renameSession = s
+                                        renameText = s.name
+                                    }) {
+                                        Icon(Icons.Default.Edit, contentDescription = "重命名")
+                                    }
+                                    IconButton(onClick = {
+                                        chatRepo.delete(s.id)
+                                        refresh()
+                                    }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "删除")
+                                    }
                                 }
                             }
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(80.dp))
             }
         }
 
-        FloatingActionButton(
-            onClick = {
-                val p = currentProfile ?: return@FloatingActionButton
-                val newSession = ChatSession(
-                    profileId = p.id,
-                    model = p.model.ifBlank { p.models.firstOrNull() ?: "" },
-                    name = "新对话"
-                )
-                chatRepo.save(newSession)
-                refresh()
-                onOpenSession(newSession.id)
-            },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp)
-        ) {
-            Icon(Icons.Default.Add, contentDescription = "新建对话")
+        if (chatProfiles.isNotEmpty()) {
+            FloatingActionButton(
+                onClick = {
+                    val p = currentProfile ?: return@FloatingActionButton
+                    val newSession = ChatSession(
+                        profileId = p.id,
+                        model = p.model.ifBlank { p.models.firstOrNull() ?: "" },
+                        name = "新对话"
+                    )
+                    chatRepo.save(newSession)
+                    refresh()
+                    onOpenSession(newSession.id)
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "新建对话")
+            }
         }
     }
 
@@ -630,8 +648,7 @@ fun SessionListScreen(
                 TextButton(onClick = {
                     val s = renameSession
                     if (s != null && renameText.isNotBlank()) {
-                        val copy = s.copy(name = renameText)
-                        chatRepo.save(copy)
+                        chatRepo.save(s.copy(name = renameText))
                         refresh()
                     }
                     renameSession = null
@@ -656,7 +673,6 @@ fun ChatDetailScreen(
     apiService: ApiService,
     profiles: List<ApiProfile>,
     onSpeak: (String, Float) -> Unit,
-    onSaveHistory: (String, String, Float) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -667,7 +683,7 @@ fun ChatDetailScreen(
         mutableStateOf(chatRepo.loadAll().find { it.id == sessionId }?.messages?.toList() ?: emptyList())
     }
     var input by remember { mutableStateOf("") }
-    var pendingImage by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pendingAttachments by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
     var isSending by remember { mutableStateOf(false) }
     var modelExpanded by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
@@ -675,6 +691,7 @@ fun ChatDetailScreen(
 
     val profile = profiles.find { it.id == session?.profileId }
     val availableModels = profile?.models?.takeIf { it.isNotEmpty() } ?: listOfNotNull(profile?.model)
+    val isMultimodal = profile?.modelType == "multimodal"
 
     fun persist(newMessages: List<ChatMessage>, newModel: String? = null) {
         val s = chatRepo.loadAll().find { it.id == sessionId } ?: return
@@ -692,11 +709,72 @@ fun ChatDetailScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             scope.launch {
-                val result = withContext(Dispatchers.IO) { uriToBase64(context, uri) }
+                val result = withContext(Dispatchers.IO) { FileHelper.imageToBase64(context, uri) }
                 if (result != null) {
-                    pendingImage = result
+                    val att = ChatAttachment(
+                        type = "image",
+                        mimeType = result.second,
+                        base64 = result.first,
+                        name = "image.jpg"
+                    )
+                    pendingAttachments = pendingAttachments + att
                 } else {
                     Toast.makeText(context, "图片读取失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    val fileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                val mime = context.contentResolver.getType(uri) ?: ""
+                val fileName = uri.lastPathSegment ?: "file"
+                val att = withContext(Dispatchers.IO) {
+                    when {
+                        FileHelper.isTextFile(mime, fileName) -> {
+                            val text = FileHelper.readTextFile(context, uri)
+                            if (text != null) {
+                                ChatAttachment(
+                                    type = "text",
+                                    mimeType = "text/plain",
+                                    base64 = text.take(20000),
+                                    name = fileName
+                                )
+                            } else null
+                        }
+                        FileHelper.isPdf(mime, fileName) -> {
+                            val result = FileHelper.pdfToImageBase64(context, uri)
+                            if (result != null) {
+                                ChatAttachment(
+                                    type = "image",
+                                    mimeType = result.second,
+                                    base64 = result.first,
+                                    name = fileName
+                                )
+                            } else null
+                        }
+                        FileHelper.isImage(mime) -> {
+                            val result = FileHelper.imageToBase64(context, uri)
+                            if (result != null) {
+                                ChatAttachment(
+                                    type = "image",
+                                    mimeType = result.second,
+                                    base64 = result.first,
+                                    name = fileName
+                                )
+                            } else null
+                        }
+                        else -> {
+                            Toast.makeText(context, "暂不支持该文件类型", Toast.LENGTH_SHORT).show()
+                            null
+                        }
+                    }
+                }
+                if (att != null) {
+                    pendingAttachments = pendingAttachments + att
                 }
             }
         }
@@ -734,8 +812,7 @@ fun ChatDetailScreen(
                                 DropdownMenuItem(
                                     text = { Text(m) },
                                     onClick = {
-                                        val newMsgs = messages.toList()
-                                        persist(newMsgs, m)
+                                        persist(messages.toList(), m)
                                         modelExpanded = false
                                     }
                                 )
@@ -795,7 +872,7 @@ fun ChatDetailScreen(
                             )
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                if (!msg.content.isNullOrEmpty()) {
+                                if (msg.content.isNotEmpty()) {
                                     Text(
                                         text = msg.content,
                                         style = MaterialTheme.typography.bodyMedium
@@ -810,16 +887,35 @@ fun ChatDetailScreen(
                                             .height(200.dp)
                                     )
                                 }
+                                for (att in msg.attachments) {
+                                    if (att.type == "image") {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Base64Image(
+                                            base64 = att.base64,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(200.dp)
+                                        )
+                                    } else if (att.type == "text") {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Card(
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                            )
+                                        ) {
+                                            Text(
+                                                text = "附件: ${att.name}",
+                                                modifier = Modifier.padding(8.dp),
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    }
+                                }
                                 if (msg.role == "ai") {
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         TextButton(onClick = { onSpeak(msg.content, 1.0f) }) {
                                             Text("朗读")
-                                        }
-                                        TextButton(onClick = {
-                                            onSaveHistory(msg.content, "AI回复", 1.0f)
-                                        }) {
-                                            Text("保存")
                                         }
                                     }
                                 }
@@ -830,7 +926,7 @@ fun ChatDetailScreen(
             }
 
             AnimatedVisibility(
-                visible = pendingImage != null,
+                visible = pendingAttachments.isNotEmpty(),
                 enter = fadeIn() + slideInVertically(initialOffsetY = { it / 3 })
             ) {
                 Card(
@@ -839,23 +935,36 @@ fun ChatDetailScreen(
                         .padding(top = 8.dp),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        pendingImage?.let { img ->
-                            Base64Image(
-                                base64 = img.first,
-                                modifier = Modifier.size(60.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("待发送图片", style = MaterialTheme.typography.bodySmall)
-                        Spacer(modifier = Modifier.weight(1f))
-                        TextButton(onClick = { pendingImage = null }) {
-                            Text("取消")
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        for ((idx, att) in pendingAttachments.withIndex()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (att.type == "image") {
+                                    Base64Image(
+                                        base64 = att.base64,
+                                        modifier = Modifier.size(50.dp)
+                                    )
+                                } else {
+                                    Icon(Icons.Default.AttachFile, contentDescription = null)
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = att.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                IconButton(onClick = {
+                                    pendingAttachments = pendingAttachments.toMutableList().also {
+                                        it.removeAt(idx)
+                                    }
+                                }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "移除")
+                                }
+                            }
                         }
                     }
                 }
@@ -865,11 +974,16 @@ fun ChatDetailScreen(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { imageLauncher.launch("image/*") }) {
-                    Icon(Icons.Default.Image, contentDescription = "选择图片")
+                if (isMultimodal) {
+                    IconButton(onClick = { imageLauncher.launch("image/*") }) {
+                        Icon(Icons.Default.Image, contentDescription = "选择图片")
+                    }
+                }
+                IconButton(onClick = { fileLauncher.launch("*/*") }) {
+                    Icon(Icons.Default.AttachFile, contentDescription = "选择文件")
                 }
                 TextField(
                     value = input,
@@ -880,17 +994,16 @@ fun ChatDetailScreen(
                 )
                 Button(
                     onClick = {
-                        if ((input.isBlank() && pendingImage == null) || isSending) return@Button
+                        if ((input.isBlank() && pendingAttachments.isEmpty()) || isSending) return@Button
                         val userMsg = ChatMessage(
                             role = "user",
                             content = input,
-                            imageBase64 = pendingImage?.first,
-                            imageMimeType = pendingImage?.second
+                            attachments = pendingAttachments
                         )
                         val updated = messages + userMsg
                         persist(updated)
                         input = ""
-                        pendingImage = null
+                        pendingAttachments = emptyList()
                         isSending = true
 
                         val p = profile ?: run {
@@ -919,7 +1032,7 @@ fun ChatDetailScreen(
                             )
                         }
                     },
-                    enabled = !isSending && (input.isNotBlank() || pendingImage != null),
+                    enabled = !isSending && (input.isNotBlank() || pendingAttachments.isNotEmpty()),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.height(56.dp)
                 ) {
@@ -963,6 +1076,155 @@ fun ChatDetailScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ImageGenScreen(
+    apiService: ApiService,
+    profiles: List<ApiProfile>
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val imageProfiles = profiles.filter { it.enabled && it.modelType == "image" }
+    var selectedId by remember {
+        mutableStateOf(imageProfiles.firstOrNull()?.id ?: "")
+    }
+    var profileExpanded by remember { mutableStateOf(false) }
+    var prompt by remember { mutableStateOf("") }
+    var isGenerating by remember { mutableStateOf(false) }
+    var resultImage by remember { mutableStateOf<String?>(null) }
+    var resultUrl by remember { mutableStateOf<String?>(null) }
+
+    val currentProfile = imageProfiles.find { it.id == selectedId }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (imageProfiles.isEmpty()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "还没有生图模型配置，请先去设置里添加。\n预设里选「OpenAI 生图」即可。",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            return
+        }
+
+        ExposedDropdownMenuBox(
+            expanded = profileExpanded,
+            onExpandedChange = { profileExpanded = !profileExpanded },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            TextField(
+                value = currentProfile?.name ?: "选择模型",
+                onValueChange = {},
+                label = { Text("生图配置") },
+                readOnly = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(),
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileExpanded)
+                },
+                shape = RoundedCornerShape(14.dp)
+            )
+            ExposedDropdownMenu(
+                expanded = profileExpanded,
+                onDismissRequest = { profileExpanded = false }
+            ) {
+                imageProfiles.forEach { p ->
+                    DropdownMenuItem(
+                        text = { Text("${p.name} / ${p.model}") },
+                        onClick = {
+                            selectedId = p.id
+                            profileExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { prompt = it },
+            label = { Text("描述你想要的图片") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp),
+            shape = RoundedCornerShape(14.dp)
+        )
+
+        Button(
+            onClick = {
+                if (prompt.isBlank() || isGenerating) return@Button
+                val p = currentProfile ?: return@Button
+                isGenerating = true
+                resultImage = null
+                resultUrl = null
+                scope.launch {
+                    apiService.generateImage(
+                        prompt = prompt,
+                        profile = p,
+                        onSuccess = { result ->
+                            if (result.startsWith("http")) {
+                                resultUrl = result
+                            } else {
+                                resultImage = result
+                            }
+                            isGenerating = false
+                        },
+                        onError = { err ->
+                            Toast.makeText(context, "生成失败: $err", Toast.LENGTH_LONG).show()
+                            isGenerating = false
+                        }
+                    )
+                }
+            },
+            enabled = !isGenerating && prompt.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Text(if (isGenerating) "生成中..." else "生成图片")
+        }
+
+        if (resultImage != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Base64Image(
+                    base64 = resultImage!!,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(360.dp)
+                )
+            }
+        }
+
+        if (resultUrl != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("图片已生成", style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = resultUrl!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun Base64Image(base64: String, modifier: Modifier = Modifier) {
     val bitmap = remember(base64) {
@@ -983,46 +1245,23 @@ fun Base64Image(base64: String, modifier: Modifier = Modifier) {
     }
 }
 
-fun uriToBase64(context: Context, uri: Uri): Pair<String, String>? {
-    return try {
-        val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-        val bitmap = BitmapFactory.decodeStream(inputStream)
-        inputStream.close()
-        if (bitmap == null) return null
-
-        val maxSize = 1024
-        val ratio = maxSize.toFloat() / maxOf(bitmap.width, bitmap.height)
-        val finalBitmap = if (ratio < 1) {
-            Bitmap.createScaledBitmap(
-                bitmap,
-                (bitmap.width * ratio).toInt(),
-                (bitmap.height * ratio).toInt(),
-                true
-            )
-        } else bitmap
-
-        val outputStream = ByteArrayOutputStream()
-        finalBitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
-        val bytes = outputStream.toByteArray()
-        val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        Pair(base64, "image/jpeg")
-    } catch (_: Exception) {
-        null
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     apiService: ApiService,
     profiles: List<ApiProfile>,
     ttsProfile: TtsProfile,
+    isDarkMode: Boolean,
+    onDarkModeChanged: (Boolean) -> Unit,
     onProfilesChanged: (List<ApiProfile>) -> Unit,
-    onTtsProfileChanged: (TtsProfile) -> Unit
+    onTtsProfileChanged: (TtsProfile) -> Unit,
+    onBackupRestored: () -> Unit
 ) {
+    val context = LocalContext.current
     var showDialog by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<ApiProfile?>(null) }
     var showTtsDialog by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -1030,6 +1269,19 @@ fun SettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("深色模式", style = MaterialTheme.typography.bodyLarge)
+                Switch(checked = isDarkMode, onCheckedChange = onDarkModeChanged)
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1064,12 +1316,11 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(profile.name, style = MaterialTheme.typography.titleMedium)
-                            Text("类型: ${profile.providerType}", style = MaterialTheme.typography.bodySmall)
-                            Text("模型: ${profile.model}", style = MaterialTheme.typography.bodySmall)
                             Text(
-                                "共 ${profile.models.size} 个模型",
+                                "类型: ${profile.providerType} / ${profile.modelType}",
                                 style = MaterialTheme.typography.bodySmall
                             )
+                            Text("模型: ${profile.model}", style = MaterialTheme.typography.bodySmall)
                             Text(
                                 if (profile.enabled) "已启用" else "已禁用",
                                 style = MaterialTheme.typography.bodySmall
@@ -1091,7 +1342,6 @@ fun SettingsScreen(
             }
 
             item {
-                Spacer(modifier = Modifier.height(8.dp))
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
@@ -1111,7 +1361,37 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ),
+                    onClick = { showBackupDialog = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Backup, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("备份与恢复", style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+            }
         }
+    }
+
+    if (showBackupDialog) {
+        BackupDialog(
+            onDismiss = { showBackupDialog = false },
+            onRestored = {
+                onBackupRestored()
+                showBackupDialog = false
+            }
+        )
     }
 
     if (showTtsDialog) {
@@ -1121,112 +1401,123 @@ fun SettingsScreen(
         var model by remember { mutableStateOf(ttsProfile.model) }
         var voice by remember { mutableStateOf(ttsProfile.voice) }
         var enabled by remember { mutableStateOf(ttsProfile.enabled) }
+        var models by remember { mutableStateOf(ttsProfile.models) }
+        var voices by remember { mutableStateOf(ttsProfile.voices) }
         var presetExpanded by remember { mutableStateOf(false) }
         var voiceExpanded by remember { mutableStateOf(false) }
+        var modelExpanded by remember { mutableStateOf(false) }
 
         AlertDialog(
             onDismissRequest = { showTtsDialog = false },
             title = { Text("云端 TTS 配置") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ExposedDropdownMenuBox(
-                        expanded = presetExpanded,
-                        onExpandedChange = { presetExpanded = !presetExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextField(
-                            value = "选择预设",
-                            onValueChange = {},
-                            readOnly = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded)
-                            },
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        ExposedDropdownMenu(
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        ExposedDropdownMenuBox(
                             expanded = presetExpanded,
-                            onDismissRequest = { presetExpanded = false }
+                            onExpandedChange = { presetExpanded = !presetExpanded },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            TtsPresets.presets.forEach { preset ->
-                                DropdownMenuItem(
-                                    text = { Text(preset.name) },
-                                    onClick = {
-                                        name = preset.name
-                                        baseUrl = preset.baseUrl
-                                        model = preset.model
-                                        voice = preset.voice
-                                        presetExpanded = false
-                                    }
-                                )
+                            TextField(
+                                value = "选择预设",
+                                onValueChange = {},
+                                readOnly = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(),
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded)
+                                },
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = presetExpanded,
+                                onDismissRequest = { presetExpanded = false }
+                            ) {
+                                TtsPresets.presets.forEach { preset ->
+                                    DropdownMenuItem(
+                                        text = { Text(preset.name) },
+                                        onClick = {
+                                            name = preset.name
+                                            baseUrl = preset.baseUrl
+                                            model = preset.model
+                                            voice = preset.voice
+                                            models = preset.models
+                                            voices = preset.voices
+                                            presetExpanded = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
-
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("名称") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = baseUrl,
-                        onValueChange = { baseUrl = it },
-                        label = { Text("Base URL") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = apiKey,
-                        onValueChange = { apiKey = it },
-                        label = { Text("API Key") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = model,
-                        onValueChange = { model = it },
-                        label = { Text("模型") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    ExposedDropdownMenuBox(
-                        expanded = voiceExpanded,
-                        onExpandedChange = { voiceExpanded = !voiceExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextField(
-                            value = voice,
-                            onValueChange = { voice = it },
-                            label = { Text("音色") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = voiceExpanded)
-                            },
-                            shape = RoundedCornerShape(14.dp)
+                    item {
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("名称") },
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        ExposedDropdownMenu(
-                            expanded = voiceExpanded,
-                            onDismissRequest = { voiceExpanded = false }
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            label = { Text("Base URL") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            label = { Text("API Key (可留空)") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TtsPresets.voices.forEach { v ->
-                                DropdownMenuItem(
-                                    text = { Text(v) },
-                                    onClick = {
-                                        voice = v
-                                        voiceExpanded = false
-                                    }
-                                )
+                            OutlinedTextField(
+                                value = model,
+                                onValueChange = { model = it },
+                                label = { Text("模型") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { modelExpanded = true }) {
+                                Text("选择")
                             }
                         }
                     }
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("启用为默认引擎")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(checked = enabled, onCheckedChange = { enabled = it })
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = voice,
+                                onValueChange = { voice = it },
+                                label = { Text("音色") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { voiceExpanded = true }) {
+                                Text("选择")
+                            }
+                        }
+                    }
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("启用为默认引擎")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(checked = enabled, onCheckedChange = { enabled = it })
+                        }
                     }
                 }
             },
@@ -1239,6 +1530,8 @@ fun SettingsScreen(
                         apiKey = apiKey,
                         model = model,
                         voice = voice,
+                        models = models,
+                        voices = voices,
                         enabled = enabled
                     )
                     onTtsProfileChanged(newProfile)
@@ -1253,20 +1546,76 @@ fun SettingsScreen(
                 }
             }
         )
+
+        if (voiceExpanded) {
+            AlertDialog(
+                onDismissRequest = { voiceExpanded = false },
+                title = { Text("选择音色") },
+                text = {
+                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                        items(if (voices.isEmpty()) TtsPresets.commonVoices else voices) { v ->
+                            TextButton(
+                                onClick = {
+                                    voice = v
+                                    voiceExpanded = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(v)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { voiceExpanded = false }) {
+                        Text("关闭")
+                    }
+                }
+            )
+        }
+
+        if (modelExpanded) {
+            AlertDialog(
+                onDismissRequest = { modelExpanded = false },
+                title = { Text("选择模型") },
+                text = {
+                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                        items(if (models.isEmpty()) TtsPresets.commonModels else models) { m ->
+                            TextButton(
+                                onClick = {
+                                    model = m
+                                    modelExpanded = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(m)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { modelExpanded = false }) {
+                        Text("关闭")
+                    }
+                }
+            )
+        }
     }
 
     if (showDialog) {
         val scope = rememberCoroutineScope()
-        val context = LocalContext.current
         var name by remember { mutableStateOf(editingProfile?.name ?: "") }
         var providerType by remember { mutableStateOf(editingProfile?.providerType ?: "OpenAI") }
+        var modelType by remember { mutableStateOf(editingProfile?.modelType ?: "text") }
         var baseUrl by remember { mutableStateOf(editingProfile?.baseUrl ?: "") }
+        var imageUrl by remember { mutableStateOf(editingProfile?.imageUrl ?: "") }
         var apiKey by remember { mutableStateOf(editingProfile?.apiKey ?: "") }
         var model by remember { mutableStateOf(editingProfile?.model ?: "") }
         var models by remember { mutableStateOf<List<String>>(editingProfile?.models ?: emptyList()) }
         var enabled by remember { mutableStateOf(editingProfile?.enabled ?: true) }
         var presetExpanded by remember { mutableStateOf(false) }
         var typeExpanded by remember { mutableStateOf(false) }
+        var modelTypeExpanded by remember { mutableStateOf(false) }
         var testing by remember { mutableStateOf(false) }
         var fetching by remember { mutableStateOf(false) }
         var showModelsDialog by remember { mutableStateOf(false) }
@@ -1275,7 +1624,9 @@ fun SettingsScreen(
             return editingProfile?.copy(
                 name = name,
                 providerType = providerType,
+                modelType = modelType,
                 baseUrl = baseUrl,
+                imageUrl = imageUrl,
                 apiKey = apiKey,
                 model = model,
                 models = models,
@@ -1283,7 +1634,9 @@ fun SettingsScreen(
             ) ?: ApiProfile(
                 name = name,
                 providerType = providerType,
+                modelType = modelType,
                 baseUrl = baseUrl,
+                imageUrl = imageUrl,
                 apiKey = apiKey,
                 model = model,
                 models = models,
@@ -1295,175 +1648,239 @@ fun SettingsScreen(
             onDismissRequest = { showDialog = false },
             title = { Text(if (editingProfile == null) "添加 API 配置" else "编辑 API 配置") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ExposedDropdownMenuBox(
-                        expanded = presetExpanded,
-                        onExpandedChange = { presetExpanded = !presetExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextField(
-                            value = "选择预设快速填充",
-                            onValueChange = {},
-                            readOnly = true,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded)
-                            },
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        ExposedDropdownMenu(
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item {
+                        ExposedDropdownMenuBox(
                             expanded = presetExpanded,
-                            onDismissRequest = { presetExpanded = false }
+                            onExpandedChange = { presetExpanded = !presetExpanded },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            AiProviders.presets.forEach { preset ->
-                                DropdownMenuItem(
-                                    text = { Text(preset.name) },
-                                    onClick = {
-                                        name = preset.name
-                                        providerType = preset.providerType
-                                        baseUrl = preset.baseUrl
-                                        model = preset.defaultModel
-                                        models = preset.models
-                                        presetExpanded = false
-                                    }
-                                )
+                            TextField(
+                                value = "选择预设快速填充",
+                                onValueChange = {},
+                                readOnly = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(),
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded)
+                                },
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = presetExpanded,
+                                onDismissRequest = { presetExpanded = false }
+                            ) {
+                                AiProviders.presets.forEach { preset ->
+                                    DropdownMenuItem(
+                                        text = { Text(preset.name) },
+                                        onClick = {
+                                            name = preset.name
+                                            providerType = preset.providerType
+                                            modelType = preset.modelType
+                                            baseUrl = preset.baseUrl
+                                            imageUrl = preset.imageUrl
+                                            model = preset.defaultModel
+                                            models = preset.models
+                                            presetExpanded = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
-
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("名称") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    ExposedDropdownMenuBox(
-                        expanded = typeExpanded,
-                        onExpandedChange = { typeExpanded = !typeExpanded },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TextField(
-                            value = providerType,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("提供商类型") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = typeExpanded)
-                            },
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        ExposedDropdownMenu(
-                            expanded = typeExpanded,
-                            onDismissRequest = { typeExpanded = false }
-                        ) {
-                            listOf("OpenAI", "Gemini", "Claude", "Ollama").forEach { type ->
-                                DropdownMenuItem(
-                                    text = { Text(type) },
-                                    onClick = {
-                                        providerType = type
-                                        typeExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = baseUrl,
-                        onValueChange = { baseUrl = it },
-                        label = { Text("Base URL") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = apiKey,
-                        onValueChange = { apiKey = it },
-                        label = { Text("API Key") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    item {
                         OutlinedTextField(
-                            value = model,
-                            onValueChange = { model = it },
-                            label = { Text("默认模型") },
-                            modifier = Modifier.weight(1f)
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("名称") },
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        TextButton(
-                            onClick = {
-                                fetching = true
-                                scope.launch {
-                                    apiService.fetchModels(
-                                        profile = buildProfile(),
-                                        onSuccess = { list ->
-                                            models = list
-                                            showModelsDialog = true
-                                            fetching = false
-                                        },
-                                        onError = { err ->
-                                            Toast.makeText(context, "获取失败: $err", Toast.LENGTH_LONG).show()
-                                            fetching = false
+                    }
+                    item {
+                        ExposedDropdownMenuBox(
+                            expanded = typeExpanded,
+                            onExpandedChange = { typeExpanded = !typeExpanded },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            TextField(
+                                value = providerType,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("提供商类型") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(),
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = typeExpanded)
+                                },
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = typeExpanded,
+                                onDismissRequest = { typeExpanded = false }
+                            ) {
+                                listOf("OpenAI", "Gemini", "Claude", "Ollama").forEach { type ->
+                                    DropdownMenuItem(
+                                        text = { Text(type) },
+                                        onClick = {
+                                            providerType = type
+                                            typeExpanded = false
                                         }
                                     )
                                 }
-                            },
-                            enabled = !fetching
-                        ) {
-                            Text(if (fetching) "..." else "获取")
+                            }
                         }
                     }
-
-                    Text(
-                        text = "已保存 ${models.size} 个模型",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("启用")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(checked = enabled, onCheckedChange = { enabled = it })
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        TextButton(
-                            onClick = {
-                                testing = true
-                                scope.launch {
-                                    apiService.testConnection(
-                                        profile = buildProfile(),
-                                        onResult = { ok, msg ->
-                                            Toast.makeText(
-                                                context,
-                                                if (ok) "连接成功" else "连接失败: $msg",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            testing = false
+                    item {
+                        ExposedDropdownMenuBox(
+                            expanded = modelTypeExpanded,
+                            onExpandedChange = { modelTypeExpanded = !modelTypeExpanded },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            TextField(
+                                value = when (modelType) {
+                                    "text" -> "纯文本"
+                                    "multimodal" -> "多模态 (图片/文件)"
+                                    "image" -> "生图"
+                                    else -> modelType
+                                },
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("模型类型") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(),
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelTypeExpanded)
+                                },
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = modelTypeExpanded,
+                                onDismissRequest = { modelTypeExpanded = false }
+                            ) {
+                                listOf(
+                                    "text" to "纯文本",
+                                    "multimodal" to "多模态 (图片/文件)",
+                                    "image" to "生图"
+                                ).forEach { (value, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            modelType = value
+                                            modelTypeExpanded = false
                                         }
                                     )
                                 }
-                            },
-                            enabled = !testing
+                            }
+                        }
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it },
+                            label = { Text(if (modelType == "image") "生图 URL" else "Base URL") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = apiKey,
+                            onValueChange = { apiKey = it },
+                            label = { Text("API Key") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(if (testing) "测试中..." else "测试连接")
+                            OutlinedTextField(
+                                value = model,
+                                onValueChange = { model = it },
+                                label = { Text("默认模型") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (modelType != "image") {
+                                TextButton(
+                                    onClick = {
+                                        fetching = true
+                                        scope.launch {
+                                            apiService.fetchModels(
+                                                profile = buildProfile(),
+                                                onSuccess = { list ->
+                                                    models = list
+                                                    showModelsDialog = true
+                                                    fetching = false
+                                                },
+                                                onError = { err ->
+                                                    Toast.makeText(context, "获取失败: $err", Toast.LENGTH_LONG).show()
+                                                    fetching = false
+                                                }
+                                            )
+                                        }
+                                    },
+                                    enabled = !fetching
+                                ) {
+                                    Text(if (fetching) "..." else "获取")
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        Text(
+                            text = "已保存 ${models.size} 个模型",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("启用")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(checked = enabled, onCheckedChange = { enabled = it })
+                        }
+                    }
+                    if (modelType != "image") {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        testing = true
+                                        scope.launch {
+                                            apiService.testConnection(
+                                                profile = buildProfile(),
+                                                onResult = { ok, msg ->
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (ok) "连接成功" else "连接失败: $msg",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                    testing = false
+                                                }
+                                            )
+                                        }
+                                    },
+                                    enabled = !testing
+                                ) {
+                                    Text(if (testing) "测试中..." else "测试连接")
+                                }
+                            }
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (name.isNotBlank() && baseUrl.isNotBlank()) {
+                    if (name.isNotBlank() && (baseUrl.isNotBlank() || imageUrl.isNotBlank())) {
                         val newProfile = buildProfile()
                         val newList = if (editingProfile == null) {
                             profiles + newProfile
@@ -1516,6 +1933,123 @@ fun SettingsScreen(
             )
         }
     }
+}
+
+@Composable
+fun BackupDialog(
+    onDismiss: () -> Unit,
+    onRestored: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var webUrl by remember { mutableStateOf("") }
+    var webKey by remember { mutableStateOf("") }
+    var working by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("备份与恢复") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val file = BackupHelper.exportLocal(context)
+                        if (file != null) {
+                            BackupHelper.shareBackup(context, file)
+                        } else {
+                            Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("导出到本地")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Web 备份", style = MaterialTheme.typography.titleSmall)
+
+                OutlinedTextField(
+                    value = webUrl,
+                    onValueChange = { webUrl = it },
+                    label = { Text("Web 地址") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = webKey,
+                    onValueChange = { webKey = it },
+                    label = { Text("Web API Key (可留空)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (webUrl.isBlank()) return@Button
+                            working = true
+                            val json = BackupHelper.buildBackupJson(context)
+                            scope.launch {
+                                BackupHelper.uploadToWeb(
+                                    url = webUrl,
+                                    apiKey = webKey,
+                                    json = json,
+                                    onResult = { ok, msg ->
+                                        Toast.makeText(
+                                            context,
+                                            if (ok) "上传成功" else "上传失败: $msg",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        working = false
+                                    }
+                                )
+                            }
+                        },
+                        enabled = !working && webUrl.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("上传")
+                    }
+                    Button(
+                        onClick = {
+                            if (webUrl.isBlank()) return@Button
+                            working = true
+                            scope.launch {
+                                BackupHelper.downloadFromWeb(
+                                    url = webUrl,
+                                    apiKey = webKey,
+                                    onResult = { ok, result ->
+                                        if (ok) {
+                                            val success = BackupHelper.importFromString(context, result)
+                                            Toast.makeText(
+                                                context,
+                                                if (success) "恢复成功" else "恢复失败",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            if (success) onRestored()
+                                        } else {
+                                            Toast.makeText(context, "下载失败: $result", Toast.LENGTH_LONG).show()
+                                        }
+                                        working = false
+                                    }
+                                )
+                            }
+                        },
+                        enabled = !working && webUrl.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("下载")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
 }
 
 @Composable
