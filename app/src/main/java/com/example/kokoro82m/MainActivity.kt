@@ -211,7 +211,7 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Basic) }
-    var profiles by remember { mutableStateOf(ApiProfileStore.load(context)) }
+    var profiles: List<ApiProfile> by remember { mutableStateOf(ApiProfileStore.load(context)) }
     var ttsProfile by remember { mutableStateOf(TtsProfileStore.load(context)) }
     var currentSessionId by remember { mutableStateOf<String?>(null) }
 
