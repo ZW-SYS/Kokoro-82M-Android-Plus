@@ -465,6 +465,7 @@ fun SessionListScreen(
     var profileExpanded by remember { mutableStateOf(false) }
     var renameSession by remember { mutableStateOf<ChatSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var pendingNewSession by remember { mutableStateOf<ChatSession?>(null) }
 
     fun refresh() {
         sessions = chatRepo.loadAll()
@@ -621,7 +622,12 @@ fun SessionListScreen(
                     )
                     chatRepo.save(newSession)
                     refresh()
-                    onOpenSession(newSession.id)
+                    val allModels = p.models.ifEmpty { listOfNotNull(p.model) }
+                    if (allModels.size > 1) {
+                        pendingNewSession = newSession
+                    } else {
+                        onOpenSession(newSession.id)
+                    }
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -630,6 +636,47 @@ fun SessionListScreen(
                 Icon(Icons.Default.Add, contentDescription = "新建对话")
             }
         }
+    }
+
+    if (pendingNewSession != null) {
+        val s = pendingNewSession!!
+        val p = chatProfiles.find { it.id == s.profileId }
+        val allModels = (p?.models ?: emptyList()).ifEmpty { listOfNotNull(p?.model) }
+        AlertDialog(
+            onDismissRequest = {
+                onOpenSession(s.id)
+                pendingNewSession = null
+            },
+            title = { Text("选择模型") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(allModels) { m ->
+                        TextButton(
+                            onClick = {
+                                val updated = s.copy(model = m)
+                                chatRepo.save(updated)
+                                onOpenSession(updated.id)
+                                pendingNewSession = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(m)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onOpenSession(s.id)
+                    pendingNewSession = null
+                }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     if (renameSession != null) {
@@ -694,13 +741,32 @@ fun ChatDetailScreen(
     val profile = profiles.find { it.id == session?.profileId }
 
     val availableModels = remember(profile) {
-        val fetched = profile?.models?.takeIf { it.isNotEmpty() } ?: emptyList()
-        val fallback = AiProviders.presets
-            .firstOrNull { it.providerType == profile?.providerType && it.modelType == profile?.modelType }
-            ?.models
-            ?: emptyList()
-        val current = listOfNotNull(profile?.model?.takeIf { it.isNotBlank() })
-        (fetched + current + fallback).distinct()
+        val result = mutableListOf<String>()
+
+        if (profile?.models?.isNotEmpty() == true) {
+            result.addAll(profile.models)
+        }
+
+        profile?.model?.takeIf { it.isNotBlank() }?.let { result.add(it) }
+
+        val matched = AiProviders.presets.firstOrNull {
+            it.providerType == profile?.providerType && it.modelType == profile?.modelType
+        }
+        if (matched != null) {
+            result.addAll(matched.models)
+        } else {
+            result.addAll(
+                listOf(
+                    "gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo",
+                    "deepseek-chat", "deepseek-reasoner",
+                    "claude-3-haiku-20240307", "claude-3-sonnet-20240229",
+                    "gemini-1.5-flash", "gemini-1.5-pro",
+                    "qwen-turbo", "qwen-plus", "glm-4", "moonshot-v1-8k"
+                )
+            )
+        }
+
+        result.distinct()
     }
 
     val isMultimodal = profile?.modelType == "multimodal"
@@ -1372,6 +1438,10 @@ fun SettingsScreen(
                             )
                             Text("模型: ${profile.model}", style = MaterialTheme.typography.bodySmall)
                             Text(
+                                "共 ${profile.models.size} 个模型",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
                                 if (profile.enabled) "已启用" else "已禁用",
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -1670,19 +1740,32 @@ fun SettingsScreen(
         var fetching by remember { mutableStateOf(false) }
         var showModelsDialog by remember { mutableStateOf(false) }
 
-        fun buildProfile(): ApiProfile {
-            return editingProfile?.copy(
-                name = name,
+        fun saveProfile(newModel: String? = null) {
+            val profileName = name.ifBlank { "新配置" }
+            val profileBase = baseUrl.ifBlank { imageUrl }
+            if (profileBase.isBlank()) return
+            val updated = (editingProfile ?: ApiProfile()).copy(
+                name = profileName,
                 providerType = providerType,
                 modelType = modelType,
                 baseUrl = baseUrl,
                 imageUrl = imageUrl,
                 apiKey = apiKey,
-                model = model,
+                model = newModel ?: model,
                 models = models,
                 enabled = enabled
-            ) ?: ApiProfile(
-                name = name,
+            )
+            val newList = if (editingProfile == null) {
+                profiles + updated
+            } else {
+                profiles.map { if (it.id == editingProfile?.id) updated else it }
+            }
+            onProfilesChanged(newList)
+        }
+
+        fun buildProfile(): ApiProfile {
+            return (editingProfile ?: ApiProfile()).copy(
+                name = name.ifBlank { "新配置" },
                 providerType = providerType,
                 modelType = modelType,
                 baseUrl = baseUrl,
@@ -1866,8 +1949,10 @@ fun SettingsScreen(
                                                 profile = buildProfile(),
                                                 onSuccess = { list ->
                                                     models = list
+                                                    saveProfile()
                                                     showModelsDialog = true
                                                     fetching = false
+                                                    Toast.makeText(context, "已保存 ${list.size} 个模型", Toast.LENGTH_SHORT).show()
                                                 },
                                                 onError = { err ->
                                                     Toast.makeText(context, "获取失败: $err", Toast.LENGTH_LONG).show()
@@ -1885,7 +1970,7 @@ fun SettingsScreen(
                     }
                     item {
                         Text(
-                            text = "已保存 ${models.size} 个模型",
+                            text = "已保存 ${models.size} 个模型，可在对话中切换",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -1966,6 +2051,7 @@ fun SettingsScreen(
                             TextButton(
                                 onClick = {
                                     model = m
+                                    saveProfile(m)
                                     showModelsDialog = false
                                 },
                                 modifier = Modifier.fillMaxWidth()
@@ -1976,8 +2062,11 @@ fun SettingsScreen(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { showModelsDialog = false }) {
-                        Text("关闭")
+                    TextButton(onClick = {
+                        saveProfile()
+                        showModelsDialog = false
+                    }) {
+                        Text("保持当前")
                     }
                 }
             )
