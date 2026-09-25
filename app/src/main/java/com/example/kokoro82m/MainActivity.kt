@@ -688,9 +688,21 @@ fun ChatDetailScreen(
     var modelExpanded by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
+    var showManualModel by remember { mutableStateOf(false) }
+    var manualModelText by remember { mutableStateOf("") }
 
     val profile = profiles.find { it.id == session?.profileId }
-    val availableModels = profile?.models?.takeIf { it.isNotEmpty() } ?: listOfNotNull(profile?.model)
+
+    val availableModels = remember(profile) {
+        val fetched = profile?.models?.takeIf { it.isNotEmpty() } ?: emptyList()
+        val fallback = AiProviders.presets
+            .firstOrNull { it.providerType == profile?.providerType && it.modelType == profile?.modelType }
+            ?.models
+            ?: emptyList()
+        val current = listOfNotNull(profile?.model?.takeIf { it.isNotBlank() })
+        (fetched + current + fallback).distinct()
+    }
+
     val isMultimodal = profile?.modelType == "multimodal"
 
     fun persist(newMessages: List<ChatMessage>, newModel: String? = null) {
@@ -817,6 +829,14 @@ fun ChatDetailScreen(
                                     }
                                 )
                             }
+                            DropdownMenuItem(
+                                text = { Text("手动输入模型") },
+                                onClick = {
+                                    manualModelText = session?.model ?: ""
+                                    showManualModel = true
+                                    modelExpanded = false
+                                }
+                            )
                         }
                     }
                     IconButton(onClick = {
@@ -1040,6 +1060,36 @@ fun ChatDetailScreen(
                 }
             }
         }
+    }
+
+    if (showManualModel) {
+        AlertDialog(
+            onDismissRequest = { showManualModel = false },
+            title = { Text("手动输入模型名称") },
+            text = {
+                OutlinedTextField(
+                    value = manualModelText,
+                    onValueChange = { manualModelText = it },
+                    label = { Text("模型名称") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (manualModelText.isNotBlank()) {
+                        persist(messages.toList(), manualModelText)
+                    }
+                    showManualModel = false
+                }) {
+                    Text("确定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualModel = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     if (showRename) {
@@ -1946,23 +1996,61 @@ fun BackupDialog(
     var webKey by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
 
+    val localImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val content = context.contentResolver.openInputStream(uri)
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                if (content != null) {
+                    val success = BackupHelper.importFromString(context, content)
+                    Toast.makeText(
+                        context,
+                        if (success) "恢复成功" else "恢复失败",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    if (success) onRestored()
+                } else {
+                    Toast.makeText(context, "文件读取失败", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "读取失败: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("备份与恢复") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        val file = BackupHelper.exportLocal(context)
-                        if (file != null) {
-                            BackupHelper.shareBackup(context, file)
-                        } else {
-                            Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                Text("本地备份", style = MaterialTheme.typography.titleSmall)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("导出到本地")
+                    Button(
+                        onClick = {
+                            val file = BackupHelper.exportLocal(context)
+                            if (file != null) {
+                                BackupHelper.shareBackup(context, file)
+                            } else {
+                                Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("导出")
+                    }
+                    Button(
+                        onClick = { localImportLauncher.launch("application/json") },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("导入")
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
