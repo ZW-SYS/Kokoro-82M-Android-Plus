@@ -53,6 +53,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -739,6 +740,8 @@ fun ChatDetailScreen(
     var manualModelText by remember { mutableStateOf("") }
 
     val profile = profiles.find { it.id == session?.profileId }
+        ?: profiles.firstOrNull { it.enabled && it.modelType != "image" }
+        ?: profiles.firstOrNull()
 
     val availableModels = remember(profile) {
         val result = mutableListOf<String>()
@@ -869,20 +872,16 @@ fun ChatDetailScreen(
                     }
                 },
                 actions = {
-                    ExposedDropdownMenuBox(
-                        expanded = modelExpanded,
-                        onExpandedChange = { modelExpanded = !modelExpanded }
-                    ) {
-                        TextButton(
-                            onClick = { modelExpanded = true },
-                            modifier = Modifier.menuAnchor()
-                        ) {
+                    Box {
+                        TextButton(onClick = { modelExpanded = true }) {
                             Text(
-                                session?.model ?: "模型",
-                                color = MaterialTheme.colorScheme.onSurface
+                                session?.model?.takeIf { it.isNotBlank() } ?: "选择模型",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        ExposedDropdownMenu(
+                        DropdownMenu(
                             expanded = modelExpanded,
                             onDismissRequest = { modelExpanded = false }
                         ) {
@@ -892,6 +891,7 @@ fun ChatDetailScreen(
                                     onClick = {
                                         persist(messages.toList(), m)
                                         modelExpanded = false
+                                        Toast.makeText(context, "已切换到 $m", Toast.LENGTH_SHORT).show()
                                     }
                                 )
                             }
@@ -1098,7 +1098,7 @@ fun ChatDetailScreen(
                             return@Button
                         }
 
-                        val sessionModel = session?.model ?: p.model
+                        val sessionModel = session?.model?.takeIf { it.isNotBlank() } ?: p.model
                         val useProfile = p.copy(model = sessionModel)
 
                         scope.launch {
@@ -1144,6 +1144,7 @@ fun ChatDetailScreen(
                 TextButton(onClick = {
                     if (manualModelText.isNotBlank()) {
                         persist(messages.toList(), manualModelText)
+                        Toast.makeText(context, "已切换到 $manualModelText", Toast.LENGTH_SHORT).show()
                     }
                     showManualModel = false
                 }) {
