@@ -461,22 +461,19 @@ fun SessionListScreen(
 ) {
     var sessions by remember { mutableStateOf(chatRepo.loadAll()) }
     var selectedProfileId by remember {
-        mutableStateOf(profiles.firstOrNull { it.enabled && it.modelType != "image" }?.id ?: profiles.first().id)
+        mutableStateOf(profiles.firstOrNull { it.enabled && it.modelType != "image" }?.id ?: profiles.firstOrNull()?.id ?: "")
     }
     var profileExpanded by remember { mutableStateOf(false) }
     var renameSession by remember { mutableStateOf<ChatSession?>(null) }
     var renameText by remember { mutableStateOf("") }
-    var pendingNewSession by remember { mutableStateOf<ChatSession?>(null) }
 
     fun refresh() {
         sessions = chatRepo.loadAll()
     }
 
     val chatProfiles = profiles.filter { it.enabled && it.modelType != "image" }
-    val currentProfile = chatProfiles.find { it.id == selectedProfileId }
-        ?: chatProfiles.firstOrNull()
-    val filtered = sessions.filter { it.profileId == selectedProfileId }
-        .sortedByDescending { it.updatedAt }
+    val currentProfile = chatProfiles.find { it.id == selectedProfileId } ?: chatProfiles.firstOrNull()
+    val filtered = sessions.filter { it.profileId == selectedProfileId }.sortedByDescending { it.updatedAt }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -586,7 +583,7 @@ fun SessionListScreen(
                                             maxLines = 1
                                         )
                                         Text(
-                                            text = "${s.messages.size} 条 | 模型 ${s.model}",
+                                            text = "${s.messages.size} 条 | 模型 ${s.model.ifBlank { "未设置" }}",
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }
@@ -623,12 +620,7 @@ fun SessionListScreen(
                     )
                     chatRepo.save(newSession)
                     refresh()
-                    val allModels = p.models.ifEmpty { listOfNotNull(p.model) }
-                    if (allModels.size > 1) {
-                        pendingNewSession = newSession
-                    } else {
-                        onOpenSession(newSession.id)
-                    }
+                    onOpenSession(newSession.id)
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -637,47 +629,6 @@ fun SessionListScreen(
                 Icon(Icons.Default.Add, contentDescription = "新建对话")
             }
         }
-    }
-
-    if (pendingNewSession != null) {
-        val s = pendingNewSession!!
-        val p = chatProfiles.find { it.id == s.profileId }
-        val allModels = (p?.models ?: emptyList()).ifEmpty { listOfNotNull(p?.model) }
-        AlertDialog(
-            onDismissRequest = {
-                onOpenSession(s.id)
-                pendingNewSession = null
-            },
-            title = { Text("选择模型") },
-            text = {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(allModels) { m ->
-                        TextButton(
-                            onClick = {
-                                val updated = s.copy(model = m)
-                                chatRepo.save(updated)
-                                onOpenSession(updated.id)
-                                pendingNewSession = null
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(m)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onOpenSession(s.id)
-                    pendingNewSession = null
-                }) {
-                    Text("取消")
-                }
-            }
-        )
     }
 
     if (renameSession != null) {
@@ -726,32 +677,31 @@ fun ChatDetailScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var session by remember { mutableStateOf(chatRepo.loadAll().find { it.id == sessionId }) }
-    var messages by remember {
-        mutableStateOf(chatRepo.loadAll().find { it.id == sessionId }?.messages?.toList() ?: emptyList())
-    }
+    var session by remember { mutableStateOf<ChatSession?>(null) }
+    var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var input by remember { mutableStateOf("") }
     var pendingAttachments by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
     var isSending by remember { mutableStateOf(false) }
-    var modelExpanded by remember { mutableStateOf(false) }
+    var modelMenuOpen by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
-    var showManualModel by remember { mutableStateOf(false) }
-    var manualModelText by remember { mutableStateOf("") }
 
-    val profile = profiles.find { it.id == session?.profileId }
-        ?: profiles.firstOrNull { it.enabled && it.modelType != "image" }
-        ?: profiles.firstOrNull()
+    LaunchedEffect(sessionId) {
+        val loaded = chatRepo.loadAll().find { it.id == sessionId }
+        session = loaded
+        messages = loaded?.messages?.toList() ?: emptyList()
+    }
+
+    val profile = remember(profiles, session?.profileId) {
+        profiles.find { it.id == session?.profileId }
+            ?: profiles.firstOrNull { it.enabled && it.modelType != "image" }
+            ?: profiles.firstOrNull()
+    }
 
     val availableModels = remember(profile) {
         val result = mutableListOf<String>()
-
-        if (profile?.models?.isNotEmpty() == true) {
-            result.addAll(profile.models)
-        }
-
+        if (profile?.models?.isNotEmpty() == true) result.addAll(profile.models)
         profile?.model?.takeIf { it.isNotBlank() }?.let { result.add(it) }
-
         val matched = AiProviders.presets.firstOrNull {
             it.providerType == profile?.providerType && it.modelType == profile?.modelType
         }
@@ -768,21 +718,28 @@ fun ChatDetailScreen(
                 )
             )
         }
-
         result.distinct()
     }
 
     val isMultimodal = profile?.modelType == "multimodal"
 
     fun persist(newMessages: List<ChatMessage>, newModel: String? = null) {
-        val s = chatRepo.loadAll().find { it.id == sessionId } ?: return
-        s.messages.clear()
-        s.messages.addAll(newMessages)
-        s.updatedAt = System.currentTimeMillis()
-        if (newModel != null) s.model = newModel
-        chatRepo.save(s)
-        session = s
-        messages = newMessages
+        try {
+            val current = chatRepo.loadAll().find { it.id == sessionId } ?: return
+            current.messages.clear()
+            current.messages.addAll(newMessages)
+            current.updatedAt = System.currentTimeMillis()
+            if (newModel != null) current.model = newModel
+            chatRepo.save(current)
+            session = current
+            messages = newMessages
+        } catch (_: Exception) {}
+    }
+
+    fun selectModel(m: String) {
+        if (m.isBlank()) return
+        persist(messages, m)
+        Toast.makeText(context, "已切换到 $m", Toast.LENGTH_SHORT).show()
     }
 
     val imageLauncher = rememberLauncherForActivityResult(
@@ -873,36 +830,27 @@ fun ChatDetailScreen(
                 },
                 actions = {
                     Box {
-                        TextButton(onClick = { modelExpanded = true }) {
+                        TextButton(onClick = { modelMenuOpen = true }) {
                             Text(
                                 session?.model?.takeIf { it.isNotBlank() } ?: "选择模型",
-                                color = MaterialTheme.colorScheme.onSurface,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
                         DropdownMenu(
-                            expanded = modelExpanded,
-                            onDismissRequest = { modelExpanded = false }
+                            expanded = modelMenuOpen,
+                            onDismissRequest = { modelMenuOpen = false }
                         ) {
                             availableModels.forEach { m ->
                                 DropdownMenuItem(
                                     text = { Text(m) },
                                     onClick = {
-                                        persist(messages.toList(), m)
-                                        modelExpanded = false
-                                        Toast.makeText(context, "已切换到 $m", Toast.LENGTH_SHORT).show()
+                                        selectModel(m)
+                                        modelMenuOpen = false
                                     }
                                 )
                             }
-                            DropdownMenuItem(
-                                text = { Text("手动输入模型") },
-                                onClick = {
-                                    manualModelText = session?.model ?: ""
-                                    showManualModel = true
-                                    modelExpanded = false
-                                }
-                            )
                         }
                     }
                     IconButton(onClick = {
@@ -1081,6 +1029,22 @@ fun ChatDetailScreen(
                 Button(
                     onClick = {
                         if ((input.isBlank() && pendingAttachments.isEmpty()) || isSending) return@Button
+
+                        val p = profile
+                        if (p == null) {
+                            Toast.makeText(context, "未找到 API 配置，请先到设置里添加", Toast.LENGTH_LONG).show()
+                            return@Button
+                        }
+
+                        val sessionModel = session?.model?.takeIf { it.isNotBlank() }
+                            ?: p.model.takeIf { it.isNotBlank() }
+                            ?: p.models.firstOrNull()
+
+                        if (sessionModel.isNullOrBlank()) {
+                            Toast.makeText(context, "请先选择模型", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+
                         val userMsg = ChatMessage(
                             role = "user",
                             content = input,
@@ -1092,30 +1056,28 @@ fun ChatDetailScreen(
                         pendingAttachments = emptyList()
                         isSending = true
 
-                        val p = profile ?: run {
-                            Toast.makeText(context, "未找到 API 配置", Toast.LENGTH_SHORT).show()
-                            isSending = false
-                            return@Button
-                        }
-
-                        val sessionModel = session?.model?.takeIf { it.isNotBlank() } ?: p.model
                         val useProfile = p.copy(model = sessionModel)
 
                         scope.launch {
-                            apiService.chat(
-                                messages = updated,
-                                profile = useProfile,
-                                onSuccess = { reply ->
-                                    val withReply = messages + ChatMessage("ai", reply)
-                                    persist(withReply)
-                                    isSending = false
-                                },
-                                onError = { error ->
-                                    val withError = messages + ChatMessage("ai", "错误: $error")
-                                    persist(withError)
-                                    isSending = false
-                                }
-                            )
+                            try {
+                                apiService.chat(
+                                    messages = updated,
+                                    profile = useProfile,
+                                    onSuccess = { reply ->
+                                        val withReply = messages + ChatMessage("ai", reply)
+                                        persist(withReply)
+                                        isSending = false
+                                    },
+                                    onError = { error ->
+                                        val withError = messages + ChatMessage("ai", "错误: $error")
+                                        persist(withError)
+                                        isSending = false
+                                    }
+                                )
+                            } catch (e: Exception) {
+                                isSending = false
+                                Toast.makeText(context, "请求异常: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
                     },
                     enabled = !isSending && (input.isNotBlank() || pendingAttachments.isNotEmpty()),
@@ -1126,37 +1088,6 @@ fun ChatDetailScreen(
                 }
             }
         }
-    }
-
-    if (showManualModel) {
-        AlertDialog(
-            onDismissRequest = { showManualModel = false },
-            title = { Text("手动输入模型名称") },
-            text = {
-                OutlinedTextField(
-                    value = manualModelText,
-                    onValueChange = { manualModelText = it },
-                    label = { Text("模型名称") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (manualModelText.isNotBlank()) {
-                        persist(messages.toList(), manualModelText)
-                        Toast.makeText(context, "已切换到 $manualModelText", Toast.LENGTH_SHORT).show()
-                    }
-                    showManualModel = false
-                }) {
-                    Text("确定")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showManualModel = false }) {
-                    Text("取消")
-                }
-            }
-        )
     }
 
     if (showRename) {
