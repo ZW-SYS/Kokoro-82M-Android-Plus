@@ -677,8 +677,11 @@ fun ChatDetailScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var session by remember { mutableStateOf<ChatSession?>(null) }
+    var sessionName by remember { mutableStateOf("对话") }
+    var sessionModel by remember { mutableStateOf("") }
+    var sessionProfileId by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
+
     var input by remember { mutableStateOf("") }
     var pendingAttachments by remember { mutableStateOf<List<ChatAttachment>>(emptyList()) }
     var isSending by remember { mutableStateOf(false) }
@@ -687,20 +690,25 @@ fun ChatDetailScreen(
     var renameText by remember { mutableStateOf("") }
 
     LaunchedEffect(sessionId) {
-        val loaded = chatRepo.loadAll().find { it.id == sessionId }
-        session = loaded
-        messages = loaded?.messages?.toList() ?: emptyList()
+        val s = chatRepo.loadAll().find { it.id == sessionId }
+        if (s != null) {
+            sessionName = s.name
+            sessionModel = s.model
+            sessionProfileId = s.profileId
+            messages = s.messages.toList()
+        }
     }
 
-    val profile = remember(profiles, session?.profileId) {
-        profiles.find { it.id == session?.profileId }
+    val profile = remember(profiles, sessionProfileId) {
+        profiles.find { it.id == sessionProfileId }
             ?: profiles.firstOrNull { it.enabled && it.modelType != "image" }
             ?: profiles.firstOrNull()
     }
 
-    val availableModels = remember(profile) {
+    val availableModels = remember(profile, sessionModel) {
         val result = mutableListOf<String>()
         if (profile?.models?.isNotEmpty() == true) result.addAll(profile.models)
+        sessionModel.takeIf { it.isNotBlank() }?.let { result.add(it) }
         profile?.model?.takeIf { it.isNotBlank() }?.let { result.add(it) }
         val matched = AiProviders.presets.firstOrNull {
             it.providerType == profile?.providerType && it.modelType == profile?.modelType
@@ -723,22 +731,21 @@ fun ChatDetailScreen(
 
     val isMultimodal = profile?.modelType == "multimodal"
 
-    fun persist(newMessages: List<ChatMessage>, newModel: String? = null) {
+    fun saveToDisk(newMessages: List<ChatMessage>, newModel: String? = null) {
         try {
-            val current = chatRepo.loadAll().find { it.id == sessionId } ?: return
-            current.messages.clear()
-            current.messages.addAll(newMessages)
-            current.updatedAt = System.currentTimeMillis()
-            if (newModel != null) current.model = newModel
-            chatRepo.save(current)
-            session = current
-            messages = newMessages
+            val s = chatRepo.loadAll().find { it.id == sessionId } ?: return
+            s.messages.clear()
+            s.messages.addAll(newMessages)
+            s.updatedAt = System.currentTimeMillis()
+            if (newModel != null) s.model = newModel
+            chatRepo.save(s)
         } catch (_: Exception) {}
     }
 
     fun selectModel(m: String) {
         if (m.isBlank()) return
-        persist(messages, m)
+        sessionModel = m
+        saveToDisk(messages, m)
         Toast.makeText(context, "已切换到 $m", Toast.LENGTH_SHORT).show()
     }
 
@@ -822,7 +829,7 @@ fun ChatDetailScreen(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text(session?.name ?: "对话") },
+                title = { Text(sessionName) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回")
@@ -832,7 +839,7 @@ fun ChatDetailScreen(
                     Box {
                         TextButton(onClick = { modelMenuOpen = true }) {
                             Text(
-                                session?.model?.takeIf { it.isNotBlank() } ?: "选择模型",
+                                text = if (sessionModel.isBlank()) "选择模型" else sessionModel,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -854,7 +861,7 @@ fun ChatDetailScreen(
                         }
                     }
                     IconButton(onClick = {
-                        renameText = session?.name ?: ""
+                        renameText = sessionName
                         showRename = true
                     }) {
                         Icon(Icons.Default.Edit, contentDescription = "重命名")
@@ -888,69 +895,61 @@ fun ChatDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages) { msg ->
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn(tween(200)) + slideInVertically(
-                            initialOffsetY = { it / 6 },
-                            animationSpec = tween(220)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (msg.role == "user")
+                                MaterialTheme.colorScheme.primaryContainer
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant
                         )
                     ) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (msg.role == "user")
-                                    MaterialTheme.colorScheme.primaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                if (msg.content.isNotEmpty()) {
-                                    Text(
-                                        text = msg.content,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
-                                if (msg.imageBase64 != null) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            if (msg.content.isNotEmpty()) {
+                                Text(
+                                    text = msg.content,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                            if (msg.imageBase64 != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Base64Image(
+                                    base64 = msg.imageBase64,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(200.dp)
+                                )
+                            }
+                            for (att in msg.attachments) {
+                                if (att.type == "image") {
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Base64Image(
-                                        base64 = msg.imageBase64,
+                                        base64 = att.base64,
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(200.dp)
                                     )
-                                }
-                                for (att in msg.attachments) {
-                                    if (att.type == "image") {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Base64Image(
-                                            base64 = att.base64,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(200.dp)
+                                } else if (att.type == "text") {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Card(
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer
                                         )
-                                    } else if (att.type == "text") {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Card(
-                                            colors = CardDefaults.cardColors(
-                                                containerColor = MaterialTheme.colorScheme.secondaryContainer
-                                            )
-                                        ) {
-                                            Text(
-                                                text = "附件: ${att.name}",
-                                                modifier = Modifier.padding(8.dp),
-                                                style = MaterialTheme.typography.bodySmall
-                                            )
-                                        }
+                                    ) {
+                                        Text(
+                                            text = "附件: ${att.name}",
+                                            modifier = Modifier.padding(8.dp),
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
                                     }
                                 }
-                                if (msg.role == "ai") {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        TextButton(onClick = { onSpeak(msg.content, 1.0f) }) {
-                                            Text("朗读")
-                                        }
+                            }
+                            if (msg.role == "ai") {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(onClick = { onSpeak(msg.content, 1.0f) }) {
+                                        Text("朗读")
                                     }
                                 }
                             }
@@ -1032,15 +1031,16 @@ fun ChatDetailScreen(
 
                         val p = profile
                         if (p == null) {
-                            Toast.makeText(context, "未找到 API 配置，请先到设置里添加", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "未找到 API 配置，请先去设置里添加", Toast.LENGTH_LONG).show()
                             return@Button
                         }
 
-                        val sessionModel = session?.model?.takeIf { it.isNotBlank() }
+                        val useModel = sessionModel.takeIf { it.isNotBlank() }
                             ?: p.model.takeIf { it.isNotBlank() }
                             ?: p.models.firstOrNull()
+                            ?: ""
 
-                        if (sessionModel.isNullOrBlank()) {
+                        if (useModel.isBlank()) {
                             Toast.makeText(context, "请先选择模型", Toast.LENGTH_SHORT).show()
                             return@Button
                         }
@@ -1051,12 +1051,14 @@ fun ChatDetailScreen(
                             attachments = pendingAttachments
                         )
                         val updated = messages + userMsg
-                        persist(updated)
+                        messages = updated
+                        saveToDisk(updated)
+
                         input = ""
                         pendingAttachments = emptyList()
                         isSending = true
 
-                        val useProfile = p.copy(model = sessionModel)
+                        val useProfile = p.copy(model = useModel)
 
                         scope.launch {
                             try {
@@ -1065,18 +1067,21 @@ fun ChatDetailScreen(
                                     profile = useProfile,
                                     onSuccess = { reply ->
                                         val withReply = messages + ChatMessage("ai", reply)
-                                        persist(withReply)
+                                        messages = withReply
+                                        saveToDisk(withReply)
                                         isSending = false
                                     },
                                     onError = { error ->
                                         val withError = messages + ChatMessage("ai", "错误: $error")
-                                        persist(withError)
+                                        messages = withError
+                                        saveToDisk(withError)
+                                        Toast.makeText(context, "请求失败: $error", Toast.LENGTH_LONG).show()
                                         isSending = false
                                     }
                                 )
                             } catch (e: Exception) {
+                                Toast.makeText(context, "异常: ${e.message}", Toast.LENGTH_LONG).show()
                                 isSending = false
-                                Toast.makeText(context, "请求异常: ${e.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -1104,11 +1109,14 @@ fun ChatDetailScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val s = session
-                    if (s != null && renameText.isNotBlank()) {
-                        val copy = s.copy(name = renameText)
-                        chatRepo.save(copy)
-                        session = copy
+                    if (renameText.isNotBlank()) {
+                        try {
+                            val s = chatRepo.loadAll().find { it.id == sessionId }
+                            if (s != null) {
+                                chatRepo.save(s.copy(name = renameText))
+                                sessionName = renameText
+                            }
+                        } catch (_: Exception) {}
                     }
                     showRename = false
                 }) {
