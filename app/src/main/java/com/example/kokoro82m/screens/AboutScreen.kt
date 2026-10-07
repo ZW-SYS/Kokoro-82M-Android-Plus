@@ -1,7 +1,7 @@
 package com.example.kokoro82m.screens
 
-import LinkColorDark
-import LinkColorLight
+import com.example.kokoro82m.ui.theme.LinkColorDark
+import com.example.kokoro82m.ui.theme.LinkColorLight
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
