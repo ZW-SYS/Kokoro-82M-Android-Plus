@@ -1,20 +1,59 @@
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
+package com.example.kokoro82m.ui.theme
+
 import androidx.compose.ui.graphics.Color
 
-val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF6750A4),
-    onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFEADDFF),
-    onPrimaryContainer = Color(0xFF21005D),
-)
+val Purple80 = Color(0xFFD0BCFF)
+val PurpleGrey80 = Color(0xFFCCC2DC)
+val Pink80 = Color(0xFFEFB8C8)
 
-val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFFD0BCFF),
-    onPrimary = Color(0xFF381E72),
-    primaryContainer = Color(0xFF4F378B),
-    onPrimaryContainer = Color(0xFFEADDFF),
-)
+val Purple40 = Color(0xFF6650a4)
+val PurpleGrey40 = Color(0xFF625b71)
+val Pink40 = Color(0xFF7D5260)
 
-val LinkColorLight = Color(0xFF0000EE)
-val LinkColorDark = Color(0xFF9E9EFF)
+val BlueLightPrimary = Color(0xFF4A5DAE)
+val BlueLightOnPrimary = Color(0xFFFFFFFF)
+val BlueLightPrimaryContainer = Color(0xFFDDE1FF)
+val BlueLightOnPrimaryContainer = Color(0xFF00164E)
+val BlueLightSecondary = Color(0xFF5B5D72)
+val BlueLightOnSecondary = Color(0xFFFFFFFF)
+val BlueLightSecondaryContainer = Color(0xFFE0E1F9)
+val BlueLightOnSecondaryContainer = Color(0xFF181A2C)
+val BlueLightTertiary = Color(0xFF77536D)
+val BlueLightOnTertiary = Color(0xFFFFFFFF)
+val BlueLightTertiaryContainer = Color(0xFFFFD7F1)
+val BlueLightOnTertiaryContainer = Color(0xFF2D1228)
+val BlueLightError = Color(0xFFBA1A1A)
+val BlueLightOnError = Color(0xFFFFFFFF)
+val BlueLightErrorContainer = Color(0xFFFFDAD6)
+val BlueLightOnErrorContainer = Color(0xFF410002)
+val BlueLightBackground = Color(0xFFFEFBFF)
+val BlueLightOnBackground = Color(0xFF1B1B1F)
+val BlueLightSurface = Color(0xFFFEFBFF)
+val BlueLightOnSurface = Color(0xFF1B1B1F)
+val BlueLightSurfaceVariant = Color(0xFFE2E1EC)
+val BlueLightOnSurfaceVariant = Color(0xFF45464F)
+val BlueLightOutline = Color(0xFF767680)
+
+val BlueDarkPrimary = Color(0xFFB9C3FF)
+val BlueDarkOnPrimary = Color(0xFF1A2C79)
+val BlueDarkPrimaryContainer = Color(0xFF324496)
+val BlueDarkOnPrimaryContainer = Color(0xFFDDE1FF)
+val BlueDarkSecondary = Color(0xFFC4C5DD)
+val BlueDarkOnSecondary = Color(0xFF2D2F42)
+val BlueDarkSecondaryContainer = Color(0xFF434559)
+val BlueDarkOnSecondaryContainer = Color(0xFFE0E1F9)
+val BlueDarkTertiary = Color(0xFFE6BAD6)
+val BlueDarkOnTertiary = Color(0xFF44263E)
+val BlueDarkTertiaryContainer = Color(0xFF5D3C55)
+val BlueDarkOnTertiaryContainer = Color(0xFFFFD7F1)
+val BlueDarkError = Color(0xFFFFB4AB)
+val BlueDarkOnError = Color(0xFF690005)
+val BlueDarkErrorContainer = Color(0xFF93000A)
+val BlueDarkOnErrorContainer = Color(0xFFFFDAD6)
+val BlueDarkBackground = Color(0xFF1B1B1F)
+val BlueDarkOnBackground = Color(0xFFE4E1E6)
+val BlueDarkSurface = Color(0xFF1B1B1F)
+val BlueDarkOnSurface = Color(0xFFE4E1E6)
+val BlueDarkSurfaceVariant = Color(0xFF45464F)
+val BlueDarkOnSurfaceVariant = Color(0xFFC6C5D0)
+val BlueDarkOutline = Color(0xFF90909A)

@@ -131,13 +131,14 @@ class ApiService {
     suspend fun chat(
         messages: List<ChatMessage>,
         profile: ApiProfile,
+        systemPrompt: String = "",
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit
     ) {
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(profile)
-                val bodyStr = buildBody(messages, profile)
+                val bodyStr = buildBody(messages, profile, systemPrompt)
                 val body = bodyStr.toRequestBody("application/json; charset=utf-8".toMediaType())
 
                 val builder = Request.Builder().url(url)
@@ -218,7 +219,7 @@ class ApiService {
             try {
                 val url = buildUrl(profile)
                 val testMsg = listOf(ChatMessage("user", "Hi"))
-                val bodyStr = buildBody(testMsg, profile)
+                val bodyStr = buildBody(testMsg, profile, "")
                 val body = bodyStr.toRequestBody("application/json; charset=utf-8".toMediaType())
 
                 val builder = Request.Builder().url(url)
@@ -231,15 +232,15 @@ class ApiService {
                 if (response.isSuccessful) {
                     val reply = extractReply(responseBody, profile)
                     if (reply.startsWith("无法解析")) {
-                        withContext(Dispatchers.Main) { onResult(false, "Response format error") }
+                        withContext(Dispatchers.Main) { onResult(false, "响应格式异常") }
                     } else {
-                        withContext(Dispatchers.Main) { onResult(true, "Connected") }
+                        withContext(Dispatchers.Main) { onResult(true, "连接成功") }
                     }
                 } else {
                     withContext(Dispatchers.Main) { onResult(false, "HTTP ${response.code}") }
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { onResult(false, e.message ?: "Network error") }
+                withContext(Dispatchers.Main) { onResult(false, e.message ?: "网络错误") }
             }
         }
     }
@@ -279,7 +280,7 @@ class ApiService {
                     withContext(Dispatchers.Main) { onSuccess(models) }
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { onError(e.message ?: "Network error") }
+                withContext(Dispatchers.Main) { onError(e.message ?: "网络错误") }
             }
         }
     }
@@ -368,11 +369,23 @@ class ApiService {
         }
     }
 
-    private fun buildBody(messages: List<ChatMessage>, profile: ApiProfile): String {
+    private fun buildBody(messages: List<ChatMessage>, profile: ApiProfile, systemPrompt: String): String {
         val json = JSONObject()
         return when (profile.providerType) {
             "Gemini" -> {
                 val contents = JSONArray()
+
+                if (systemPrompt.isNotBlank()) {
+                    val sysContent = JSONObject()
+                    sysContent.put("role", "user")
+                    val sysParts = JSONArray()
+                    val sysText = JSONObject()
+                    sysText.put("text", "[系统指令]\n$systemPrompt")
+                    sysParts.put(sysText)
+                    sysContent.put("parts", sysParts)
+                    contents.put(sysContent)
+                }
+
                 for (msg in messages) {
                     val parts = JSONArray()
                     if (msg.content.isNotEmpty()) {
@@ -413,7 +426,11 @@ class ApiService {
             "Claude" -> {
                 json.put("model", profile.model)
                 json.put("max_tokens", 4096)
+                if (systemPrompt.isNotBlank()) {
+                    json.put("system", systemPrompt)
+                }
                 val msgs = JSONArray()
+
                 for (msg in messages) {
                     if (msg.role == "ai") {
                         val m = JSONObject()
@@ -477,8 +494,12 @@ class ApiService {
             }
             "Ollama" -> {
                 val lastUser = messages.lastOrNull { it.role == "user" }
+                var prompt = lastUser?.content ?: ""
+                if (systemPrompt.isNotBlank()) {
+                    prompt = "[系统指令]\n$systemPrompt\n\n$prompt"
+                }
                 json.put("model", profile.model)
-                json.put("prompt", lastUser?.content ?: "")
+                json.put("prompt", prompt)
                 json.put("stream", false)
                 if (lastUser?.imageBase64 != null) {
                     val imgs = JSONArray()
@@ -491,6 +512,14 @@ class ApiService {
                 json.put("model", profile.model)
                 json.put("stream", false)
                 val msgs = JSONArray()
+
+                if (systemPrompt.isNotBlank()) {
+                    val sysMsg = JSONObject()
+                    sysMsg.put("role", "system")
+                    sysMsg.put("content", systemPrompt)
+                    msgs.put(sysMsg)
+                }
+
                 for (msg in messages) {
                     val m = JSONObject()
                     m.put("role", if (msg.role == "ai") "assistant" else "user")

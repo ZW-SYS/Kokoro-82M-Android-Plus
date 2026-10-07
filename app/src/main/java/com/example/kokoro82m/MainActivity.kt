@@ -42,17 +42,20 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,8 +65,9 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -73,6 +77,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,12 +88,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import com.example.kokoro82m.utils.AgentToolConfig
+import com.example.kokoro82m.utils.AgentToolExecutor
+import com.example.kokoro82m.utils.AgentToolPrompt
+import com.example.kokoro82m.utils.AgentToolProtocol
 import com.example.kokoro82m.utils.AiProviders
 import com.example.kokoro82m.utils.ApiProfile
 import com.example.kokoro82m.utils.ApiProfileStore
@@ -99,6 +110,7 @@ import com.example.kokoro82m.utils.ChatHistoryRepository
 import com.example.kokoro82m.utils.ChatMessage
 import com.example.kokoro82m.utils.ChatSession
 import com.example.kokoro82m.utils.FileHelper
+import com.example.kokoro82m.utils.ToolResult
 import com.example.kokoro82m.utils.TtsPresets
 import com.example.kokoro82m.utils.TtsProfile
 import com.example.kokoro82m.utils.TtsProfileStore
@@ -109,8 +121,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.util.Calendar
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class MyApplication : Application() {
     override fun onCreate() {
@@ -193,12 +209,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-sealed class Screen(val title: String) {
-    object Basic : Screen("语音合成")
-    object Chat : Screen("AI 对话")
-    object ImageGen : Screen("AI 生图")
-    object Settings : Screen("设置")
-    object About : Screen("关于")
+sealed class Screen(val title: String, val icon: ImageVector) {
+    object Chat : Screen("AI 对话", Icons.Default.Chat)
+    object Basic : Screen("语音合成", Icons.Default.GraphicEq)
+    object ImageGen : Screen("AI 生图", Icons.Default.Image)
+    object Tools : Screen("工具", Icons.Default.Build)
+    object Settings : Screen("设置", Icons.Default.Settings)
+    object About : Screen("关于", Icons.Default.Info)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -211,7 +228,10 @@ fun MainScreen(
     onSpeak: (String, Float, Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    var currentScreen by remember { mutableStateOf<Screen>(Screen.Basic) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    var currentScreen by remember { mutableStateOf<Screen>(Screen.Chat) }
     var profiles: List<ApiProfile> by remember { mutableStateOf(ApiProfileStore.load(context)) }
     var ttsProfile by remember { mutableStateOf(TtsProfileStore.load(context)) }
     var currentSessionId by remember { mutableStateOf<String?>(null) }
@@ -221,11 +241,14 @@ fun MainScreen(
         ttsProfile = TtsProfileStore.load(context)
     }
 
+    val executor = remember { AgentToolExecutor(context) }
+
     if (currentSessionId != null) {
         ChatDetailScreen(
             sessionId = currentSessionId!!,
             chatRepo = chatRepo,
             apiService = apiService,
+            executor = executor,
             profiles = profiles,
             onSpeak = { text, speed -> onSpeak(text, speed, ttsProfile.enabled) },
             onBack = { currentSessionId = null }
@@ -233,89 +256,110 @@ fun MainScreen(
         return
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = { Text(currentScreen.title) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("合成") },
-                    selected = currentScreen == Screen.Basic,
-                    onClick = { currentScreen = Screen.Basic }
-                )
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Send, contentDescription = null) },
-                    label = { Text("聊天") },
-                    selected = currentScreen == Screen.Chat,
-                    onClick = { currentScreen = Screen.Chat }
-                )
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Image, contentDescription = null) },
-                    label = { Text("生图") },
-                    selected = currentScreen == Screen.ImageGen,
-                    onClick = { currentScreen = Screen.ImageGen }
-                )
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text("设置") },
-                    selected = currentScreen == Screen.Settings,
-                    onClick = { currentScreen = Screen.Settings }
-                )
-                NavigationBarItem(
-                    icon = { Icon(Icons.Default.Info, contentDescription = null) },
-                    label = { Text("关于") },
-                    selected = currentScreen == Screen.About,
-                    onClick = { currentScreen = Screen.About }
-                )
+    val menuItems = listOf(
+        Screen.Chat,
+        Screen.Basic,
+        Screen.ImageGen,
+        Screen.Tools,
+        Screen.Settings,
+        Screen.About
+    )
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Spacer(modifier = Modifier.height(24.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = "Kokoro-82M-Plus",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "v1.3",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                menuItems.forEach { screen ->
+                    NavigationDrawerItem(
+                        icon = { Icon(screen.icon, contentDescription = null) },
+                        label = { Text(screen.title) },
+                        selected = currentScreen == screen,
+                        onClick = {
+                            currentScreen = screen
+                            scope.launch { drawerState.close() }
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                    )
+                }
             }
         }
-    ) { innerPadding ->
-        Box(modifier = Modifier.padding(innerPadding)) {
-            Crossfade(
-                targetState = currentScreen,
-                animationSpec = tween(durationMillis = 260),
-                label = "screen"
-            ) { screen ->
-                when (screen) {
-                    Screen.Basic -> BasicScreen(
-                        ttsProfile = ttsProfile,
-                        onSpeak = onSpeak
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = { Text(currentScreen.title) },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(Icons.Default.Menu, contentDescription = "菜单")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     )
-                    Screen.Chat -> SessionListScreen(
-                        chatRepo = chatRepo,
-                        profiles = profiles,
-                        onOpenSession = { currentSessionId = it }
-                    )
-                    Screen.ImageGen -> ImageGenScreen(
-                        apiService = apiService,
-                        profiles = profiles
-                    )
-                    Screen.Settings -> SettingsScreen(
-                        apiService = apiService,
-                        profiles = profiles,
-                        ttsProfile = ttsProfile,
-                        isDarkMode = isDarkMode,
-                        onDarkModeChanged = onDarkModeChanged,
-                        onProfilesChanged = { newProfiles ->
-                            profiles = newProfiles
-                            ApiProfileStore.save(context, newProfiles)
-                        },
-                        onTtsProfileChanged = { newTts ->
-                            ttsProfile = newTts
-                            TtsProfileStore.save(context, newTts)
-                        },
-                        onBackupRestored = { reloadAll() }
-                    )
-                    Screen.About -> AboutScreen()
+                )
+            }
+        ) { innerPadding ->
+            Box(modifier = Modifier.padding(innerPadding)) {
+                Crossfade(
+                    targetState = currentScreen,
+                    animationSpec = tween(durationMillis = 260),
+                    label = "screen"
+                ) { screen ->
+                    when (screen) {
+                        Screen.Chat -> SessionListScreen(
+                            chatRepo = chatRepo,
+                            profiles = profiles,
+                            onOpenSession = { currentSessionId = it }
+                        )
+                        Screen.Basic -> BasicScreen(
+                            ttsProfile = ttsProfile,
+                            onSpeak = onSpeak
+                        )
+                        Screen.ImageGen -> ImageGenScreen(
+                            apiService = apiService,
+                            profiles = profiles
+                        )
+                        Screen.Tools -> ToolsScreen(context = context)
+                        Screen.Settings -> SettingsScreen(
+                            apiService = apiService,
+                            profiles = profiles,
+                            ttsProfile = ttsProfile,
+                            isDarkMode = isDarkMode,
+                            onDarkModeChanged = onDarkModeChanged,
+                            onProfilesChanged = { newProfiles ->
+                                profiles = newProfiles
+                                ApiProfileStore.save(context, newProfiles)
+                            },
+                            onTtsProfileChanged = { newTts ->
+                                ttsProfile = newTts
+                                TtsProfileStore.save(context, newTts)
+                            },
+                            onBackupRestored = { reloadAll() }
+                        )
+                        Screen.About -> AboutScreen()
+                    }
                 }
             }
         }
@@ -371,28 +415,13 @@ fun BasicScreen(
                         Text("使用云端 TTS", style = MaterialTheme.typography.bodyMedium)
                         Text(
                             text = if (ttsProfile.name.isBlank()) "未配置" else ttsProfile.name,
-                            style = MaterialTheme.typography.bodySmall
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
                         checked = useCloud,
                         onCheckedChange = { useCloud = it }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                ) {
-                    Text(
-                        text = if (useCloud) "云端 TTS 会调用你配置的 API 生成语音，音质更好。" else "系统 TTS 模式，离线可用。",
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall
                     )
                 }
 
@@ -466,6 +495,16 @@ fun SessionListScreen(
     var profileExpanded by remember { mutableStateOf(false) }
     var renameSession by remember { mutableStateOf<ChatSession?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var greeting by remember { mutableStateOf(getGreeting()) }
+    var subtitle by remember { mutableStateOf(getSubtitle()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            greeting = getGreeting()
+            subtitle = getSubtitle()
+            kotlinx.coroutines.delay(60_000L)
+        }
+    }
 
     fun refresh() {
         sessions = chatRepo.loadAll()
@@ -523,46 +562,55 @@ fun SessionListScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "对话 (${filtered.size})",
-                    style = MaterialTheme.typography.titleMedium
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                AnimatedVisibility(
-                    visible = filtered.isEmpty(),
-                    enter = fadeIn()
-                ) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
+                if (filtered.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "还没有对话，点右下角 + 新建",
-                            modifier = Modifier.padding(16.dp),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(filtered) { s ->
-                        AnimatedVisibility(
-                            visible = true,
-                            enter = fadeIn(tween(220)) + slideInVertically(
-                                initialOffsetY = { it / 4 },
-                                animationSpec = tween(220)
-                            )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            Text(
+                                text = greeting,
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(32.dp))
+                            Text(
+                                text = "点右下角 + 开始新对话",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "对话 (${filtered.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filtered) { s ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(14.dp),
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.surfaceVariant
                                 ),
@@ -571,20 +619,27 @@ fun SessionListScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(12.dp),
+                                        .padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(s.name, style = MaterialTheme.typography.titleMedium)
+                                        Text(
+                                            s.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
                                         val preview = s.messages.lastOrNull()?.content ?: "空对话"
                                         Text(
-                                            text = preview.take(40),
+                                            text = AgentToolProtocol.parse(preview).visibleText.ifBlank { "（工具调用中）" }.take(40),
                                             style = MaterialTheme.typography.bodySmall,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Text(
-                                            text = "${s.messages.size} 条 | 模型 ${s.model.ifBlank { "未设置" }}",
-                                            style = MaterialTheme.typography.bodySmall
+                                            text = "${s.messages.size} 条 | ${s.model.ifBlank { "未设置模型" }}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     IconButton(onClick = {
@@ -603,9 +658,9 @@ fun SessionListScreen(
                             }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(80.dp))
+                    Spacer(modifier = Modifier.height(80.dp))
+                }
             }
         }
 
@@ -664,12 +719,52 @@ fun SessionListScreen(
     }
 }
 
+private fun getGreeting(): String {
+    val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    return when (hour) {
+        in 5..10 -> "早上好"
+        in 11..12 -> "中午好"
+        in 13..17 -> "下午好"
+        in 18..22 -> "晚上好"
+        else -> "别熬夜了"
+    }
+}
+
+private fun getSubtitle(): String {
+    val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    return when (hour) {
+        in 5..10 -> "新的一天，从聊天开始"
+        in 11..12 -> "吃点东西，休息一下"
+        in 13..17 -> "下午茶时间，聊点啥"
+        in 18..22 -> "忙了一天，放松一下吧"
+        else -> "早点睡，明天再聊"
+    }
+}
+
+private suspend fun awaitChat(
+    apiService: ApiService,
+    messages: List<ChatMessage>,
+    profile: ApiProfile,
+    systemPrompt: String
+): String = suspendCancellableCoroutine { cont ->
+    CoroutineScope(Dispatchers.Main).launch {
+        apiService.chat(
+            messages = messages,
+            profile = profile,
+            systemPrompt = systemPrompt,
+            onSuccess = { result -> if (cont.isActive) cont.resume(result) },
+            onError = { error -> if (cont.isActive) cont.resumeWithException(Exception(error)) }
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatDetailScreen(
     sessionId: String,
     chatRepo: ChatHistoryRepository,
     apiService: ApiService,
+    executor: AgentToolExecutor,
     profiles: List<ApiProfile>,
     onSpeak: (String, Float) -> Unit,
     onBack: () -> Unit
@@ -688,6 +783,7 @@ fun ChatDetailScreen(
     var modelMenuOpen by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
+    var statusText by remember { mutableStateOf("") }
 
     LaunchedEffect(sessionId) {
         val s = chatRepo.loadAll().find { it.id == sessionId }
@@ -895,9 +991,14 @@ fun ChatDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(messages) { msg ->
+                    if (msg.role == "tool") return@items
+                    val parsed = AgentToolProtocol.parse(msg.content)
+                    val display = parsed.visibleText
+                    if (display.isEmpty()) return@items
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (msg.role == "user")
                                 MaterialTheme.colorScheme.primaryContainer
@@ -906,12 +1007,10 @@ fun ChatDetailScreen(
                         )
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
-                            if (msg.content.isNotEmpty()) {
-                                Text(
-                                    text = msg.content,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            }
+                            Text(
+                                text = display,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
                             if (msg.imageBase64 != null) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Base64Image(
@@ -948,10 +1047,31 @@ fun ChatDetailScreen(
                             if (msg.role == "ai") {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    TextButton(onClick = { onSpeak(msg.content, 1.0f) }) {
+                                    TextButton(onClick = { onSpeak(display, 1.0f) }) {
                                         Text("朗读")
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                if (isSending && statusText.isNotBlank()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = statusText,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }
@@ -1057,31 +1177,73 @@ fun ChatDetailScreen(
                         input = ""
                         pendingAttachments = emptyList()
                         isSending = true
+                        statusText = "思考中..."
 
                         val useProfile = p.copy(model = useModel)
+                        val toolsOn = AgentToolConfig.isMasterEnabled(context)
+                        val enabledTools = if (toolsOn) AgentToolConfig.getEnabledTools(context) else emptySet()
+                        val systemPrompt = if (enabledTools.isNotEmpty()) AgentToolPrompt.build(enabledTools) else ""
 
                         scope.launch {
                             try {
-                                apiService.chat(
-                                    messages = updated,
-                                    profile = useProfile,
-                                    onSuccess = { reply ->
-                                        val withReply = messages + ChatMessage("ai", reply)
+                                var currentMessages = updated
+                                var loops = 0
+                                var finalDisplayed = false
+
+                                while (loops < 5) {
+                                    loops++
+                                    statusText = if (loops == 1) "思考中..." else "第 $loops 轮工具调用中..."
+
+                                    val reply = awaitChat(
+                                        apiService = apiService,
+                                        messages = currentMessages,
+                                        profile = useProfile,
+                                        systemPrompt = systemPrompt
+                                    )
+
+                                    val parsed = AgentToolProtocol.parse(reply)
+
+                                    if (parsed.calls.isEmpty()) {
+                                        val withReply = currentMessages + ChatMessage("ai", parsed.visibleText.ifBlank { reply })
                                         messages = withReply
                                         saveToDisk(withReply)
-                                        isSending = false
-                                    },
-                                    onError = { error ->
-                                        val withError = messages + ChatMessage("ai", "错误: $error")
-                                        messages = withError
-                                        saveToDisk(withError)
-                                        Toast.makeText(context, "请求失败: $error", Toast.LENGTH_LONG).show()
-                                        isSending = false
+                                        finalDisplayed = true
+                                        break
                                     }
-                                )
+
+                                    val aiMsg = ChatMessage("ai", reply)
+                                    val resultList = mutableListOf<ToolResult>()
+                                    for (call in parsed.calls) {
+                                        statusText = "执行工具: ${call.tool}"
+                                        val r = executor.execute(call)
+                                        resultList.add(r)
+                                    }
+
+                                    val toolMsg = ChatMessage(
+                                        role = "tool",
+                                        content = AgentToolProtocol.wrapResults(resultList)
+                                    )
+
+                                    currentMessages = currentMessages + aiMsg + toolMsg
+                                    messages = currentMessages
+                                    saveToDisk(currentMessages)
+                                }
+
+                                if (!finalDisplayed) {
+                                    val endMsg = ChatMessage("ai", "（已连续调用 5 轮工具，未得到最终回复）")
+                                    val withEnd = currentMessages + endMsg
+                                    messages = withEnd
+                                    saveToDisk(withEnd)
+                                }
                             } catch (e: Exception) {
-                                Toast.makeText(context, "异常: ${e.message}", Toast.LENGTH_LONG).show()
+                                val errMsg = ChatMessage("ai", "错误: ${e.message ?: "未知错误"}")
+                                val withErr = messages + errMsg
+                                messages = withErr
+                                saveToDisk(withErr)
+                                Toast.makeText(context, "请求失败: ${e.message}", Toast.LENGTH_LONG).show()
+                            } finally {
                                 isSending = false
+                                statusText = ""
                             }
                         }
                     },
@@ -1129,6 +1291,108 @@ fun ChatDetailScreen(
                 }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ToolsScreen(context: Context) {
+    var masterEnabled by remember { mutableStateOf(AgentToolConfig.isMasterEnabled(context)) }
+    var enabledTools by remember { mutableStateOf(AgentToolConfig.getEnabledTools(context)) }
+
+    fun toggleMaster(newValue: Boolean) {
+        masterEnabled = newValue
+        AgentToolConfig.setMasterEnabled(context, newValue)
+        enabledTools = AgentToolConfig.getEnabledTools(context)
+    }
+
+    fun toggleTool(tool: String, enabled: Boolean) {
+        AgentToolConfig.setToolEnabled(context, tool, enabled)
+        enabledTools = AgentToolConfig.getEnabledTools(context)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "启用 Agent 工具",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "关闭后 AI 无法调用任何本地工具",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = masterEnabled, onCheckedChange = { toggleMaster(it) })
+            }
+        }
+
+        Text(
+            text = "已启用 ${enabledTools.size} / ${AgentToolConfig.ALL_TOOLS.size}",
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(AgentToolConfig.ALL_TOOLS) { tool ->
+                val desc = AgentToolConfig.TOOL_DESCRIPTIONS[tool] ?: ""
+                val checked = enabledTools.contains(tool)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                tool,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                desc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = checked,
+                            onCheckedChange = { toggleTool(tool, it) },
+                            enabled = masterEnabled
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
