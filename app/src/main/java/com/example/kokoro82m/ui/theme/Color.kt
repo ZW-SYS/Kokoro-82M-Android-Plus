@@ -57,3 +57,6 @@ val BlueDarkOnSurface = Color(0xFFE4E1E6)
 val BlueDarkSurfaceVariant = Color(0xFF45464F)
 val BlueDarkOnSurfaceVariant = Color(0xFFC6C5D0)
 val BlueDarkOutline = Color(0xFF90909A)
+
+val LinkColorLight = Color(0xFF1976D2)
+val LinkColorDark = Color(0xFF82B1FF)

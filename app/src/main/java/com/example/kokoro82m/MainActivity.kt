@@ -1,6 +1,6 @@
 package com.example.kokoro82m
 
-import KokoroTheme
+import com.example.kokoro82m.ui.theme.KokoroTheme
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
